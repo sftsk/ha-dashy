@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { defaultDashboardConfig, normalizeDashboardConfig } from "../src/config";
+import {
+  defaultDashboardConfig,
+  normalizeDashboardConfig,
+  panelConfigToDashboardConfig,
+  resolveBundledDashboardConfig,
+} from "../src/config";
 import sampleConfig from "../dashy.config.sample.json";
 import gitignore from "../.gitignore?raw";
 
@@ -156,6 +161,40 @@ describe("normalizeDashboardConfig", () => {
     expect(config.media.players).toEqual([
       { label: "Office Speaker", entity: "media_player.office" },
     ]);
+  });
+
+  it("uses an injected build config as the no-panel fallback without changing public defaults", () => {
+    const bundledConfig = resolveBundledDashboardConfig({
+      weather: {
+        entity: "weather.local_example",
+      },
+      environment: {
+        temperatureEntity: "sensor.local_temperature",
+        humidityEntity: "sensor.local_humidity",
+      },
+    });
+
+    expect(defaultDashboardConfig.weather.entity).toBe("weather.sample_home");
+    expect(bundledConfig.sceneTiles).toEqual([]);
+    expect(bundledConfig.controls).toEqual([]);
+    expect(bundledConfig.badges).toEqual([]);
+    expect(bundledConfig.media.players).toEqual([]);
+    expect(bundledConfig.media.idlePlaylistButtons).toEqual([]);
+    expect(panelConfigToDashboardConfig(undefined, bundledConfig).weather.entity).toBe(
+      "weather.local_example",
+    );
+    expect(panelConfigToDashboardConfig({}, bundledConfig).weather.entity).toBe(
+      "weather.local_example",
+    );
+    expect(
+      panelConfigToDashboardConfig({ dashboard: {} }, bundledConfig).weather.entity,
+    ).toBe("weather.local_example");
+    expect(
+      panelConfigToDashboardConfig(
+        { weather: { entity: "weather.panel_override" } },
+        bundledConfig,
+      ).weather.entity,
+    ).toBe("weather.panel_override");
   });
 
   it("allows panel config to replace the default badge list", () => {

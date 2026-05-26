@@ -189,7 +189,7 @@ export class DashyDashboardPanel extends HTMLElement {
       const mode = getMediaDisplayMode(
         this.config.media,
         this.mediaTracker,
-        this.currentHass,
+        this.effectiveHass(),
       );
       await this.callServiceWithOptimism(
         mode.kind === "idle" ? mode.buttons[index]?.service : undefined,

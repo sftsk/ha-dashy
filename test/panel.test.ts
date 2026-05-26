@@ -561,6 +561,50 @@ describe("dashy-dashboard-panel", () => {
     });
   });
 
+  it("can start a Sonos favorite immediately after stopping the current one", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavorites(baseHass(callService));
+    hass.states["media_player.sample_speaker"] = {
+      entity_id: "media_player.sample_speaker",
+      state: "playing",
+      attributes: {
+        source: "Music Service",
+        media_playlist: "Favorite One",
+        media_content_id: "favorite:sample-1",
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="media-stop"]')
+      ?.click();
+    await Promise.resolve();
+
+    const favoriteButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="playlist"][data-index="1"]',
+    );
+    expect(favoriteButton?.textContent).toContain("Favorite Two");
+
+    favoriteButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("media_player", "media_stop", {
+      entity_id: "media_player.sample_speaker",
+    });
+    expect(callService).toHaveBeenCalledWith("media_player", "play_media", {
+      entity_id: "media_player.sample_speaker",
+      media_content_type: "favorite_item_id",
+      media_content_id: "favorite:sample-2",
+      enqueue: "replace",
+      extra: { title: "Favorite Two" },
+    });
+  });
+
   it("keeps a paused Sonos music player visible", () => {
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;

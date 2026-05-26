@@ -32,13 +32,19 @@ The media card shows the most recently active playing player from `media.players
 
 The public template is available in `dashy.config.sample.json`. For local
 private settings, keep a copy at `dashy.config.local.json`; that file is ignored
-by Git and should not be pushed.
+by Git and should not be pushed. Production builds automatically embed
+`dashy.config.local.json` when it exists; public clones without that file build
+with the placeholder defaults.
 
 ## Build And Deploy
 
 ```sh
 npm run build
 ```
+
+If `dashy.config.local.json` exists, the generated `dist/` file contains those
+private local entities. Keep `dist/` ignored unless you intentionally need to
+publish a generated bundle.
 
 Copy the generated file to Home Assistant:
 
