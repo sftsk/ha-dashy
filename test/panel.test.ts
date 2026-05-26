@@ -613,7 +613,8 @@ describe("dashy-dashboard-panel", () => {
 
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
-    expect(styles).toContain("grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 17vw, 170px), 1fr))");
+    expect(styles).toContain("grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 17%, 170px), 1fr))");
+    expect(styles).not.toContain("clamp(64px, 17vw, 170px)");
     expect(styles).not.toMatch(/\.scene-grid\s*{[^}]*repeat\(4,/s);
     expect(styles).not.toMatch(/\.scene-grid\s*{[^}]*repeat\(3,/s);
     expect(styles).toContain("linear-gradient(135deg, #2563eb, #7c3aed)");
@@ -642,6 +643,10 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toMatch(
       /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.chart\s*{[^}]*height:\s*38px;/,
     );
+    expect(styles).toMatch(
+      /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.scene-grid\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(clamp\(54px,\s*17%,\s*150px\),\s*1fr\)\)/,
+    );
+    expect(styles).not.toContain("clamp(54px, 17vw, 150px)");
     expect(styles).toMatch(
       /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.scene-tile\s*{[^}]*aspect-ratio:\s*1 \/ 0\.62;/,
     );

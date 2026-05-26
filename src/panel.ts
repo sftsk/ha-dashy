@@ -1343,7 +1343,7 @@ const styles = `
 
   .scene-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 17vw, 170px), 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 17%, 170px), 1fr));
     gap: clamp(8px, 1.3vw, 12px);
   }
 
@@ -1957,7 +1957,7 @@ const styles = `
     }
 
     .scene-grid {
-      grid-template-columns: repeat(auto-fit, minmax(clamp(54px, 17vw, 150px), 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(clamp(54px, 17%, 150px), 1fr));
       gap: 6px;
     }
 

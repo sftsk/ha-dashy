@@ -1,6 +1,10 @@
 # Dashy Home Assistant Kiosk Panel
 
 A lightweight Home Assistant custom panel for portrait wall tablets. It uses a vanilla TypeScript custom element, the Home Assistant-provided `hass` object, and a static Vite bundle.
+Main reasons for this to exist:
+
+- optimsitic UI -> shows new state before confirmed by HA
+- very ressource optimised, works on weak tablets like Shelly X2 wall display
 
 ## Develop
 
