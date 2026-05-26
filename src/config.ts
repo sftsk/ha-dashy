@@ -1,0 +1,233 @@
+import type { DashboardConfig } from "./types";
+
+export const defaultDashboardConfig: DashboardConfig = {
+  weather: {
+    entity: "weather.sample_home",
+  },
+  environment: {
+    temperatureEntity: "sensor.sample_temperature",
+    humidityEntity: "sensor.sample_humidity",
+    maxSamples: 48,
+  },
+  sceneTiles: [
+    { label: "Scene 1", icon: "door", entity: "light.sample_scene_1" },
+    { label: "Scene 2", icon: "wall", entity: "light.sample_scene_2" },
+    { label: "Scene 3", icon: "pot", entity: "light.sample_scene_3" },
+    { label: "Scene 4", icon: "sink", entity: "light.sample_scene_4" },
+    { label: "Scene 5", icon: "table", entity: "light.sample_scene_5" },
+    { label: "Scene 6", icon: "circle", entity: "light.sample_scene_6" },
+    { label: "Scene 7", icon: "cloud", entity: "light.sample_scene_7" },
+    { label: "Scene 8", icon: "music", entity: "light.sample_scene_8" },
+    { label: "Scene 9", icon: "owl", entity: "light.sample_scene_9" },
+    { label: "Scene 10", icon: "string", entity: "light.sample_scene_10" },
+  ],
+  controls: [
+    {
+      label: "Outlet",
+      icon: "power",
+      entity: "switch.sample_outlet",
+      actions: {
+        toggle: {
+          domain: "homeassistant",
+          service: "toggle",
+          data: { entity_id: "switch.sample_outlet" },
+        },
+      },
+    },
+    {
+      label: "Shade",
+      icon: "shade",
+      entity: "cover.sample_shade",
+      actions: {
+        open: {
+          domain: "cover",
+          service: "open_cover",
+          data: { entity_id: "cover.sample_shade" },
+        },
+        stop: {
+          domain: "cover",
+          service: "stop_cover",
+          data: { entity_id: "cover.sample_shade" },
+        },
+        close: {
+          domain: "cover",
+          service: "close_cover",
+          data: { entity_id: "cover.sample_shade" },
+        },
+      },
+    },
+  ],
+  badges: [
+    {
+      label: "Appliance",
+      entity: "sensor.sample_appliance_remaining",
+      icon: "power",
+      tone: "status",
+      showState: true,
+      visibility: {
+        condition: "state",
+        entity: "sensor.sample_appliance_state",
+        state: "Run",
+      },
+    },
+    {
+      label: "Bin",
+      entity: "binary_sensor.sample_bin_full",
+      icon: "trash",
+      tone: "alert",
+      showState: false,
+      visibility: {
+        condition: "state",
+        entity: "binary_sensor.sample_bin_full",
+        state: "on",
+      },
+    },
+    {
+      label: "Air Quality",
+      entity: "sensor.sample_air_quality",
+      icon: "co2",
+      tone: "alert",
+      showState: true,
+      visibility: {
+        condition: "numeric_state",
+        entity: "sensor.sample_air_quality",
+        above: 1100,
+      },
+    },
+    {
+      label: "Appliance",
+      entity: "sensor.sample_appliance_state",
+      icon: "power",
+      tone: "status",
+      showState: true,
+      visibility: {
+        condition: "state",
+        entity: "sensor.sample_appliance_state",
+        state: "Finished",
+      },
+    },
+    {
+      label: "Reservoir",
+      entity: "sensor.sample_water_level",
+      icon: "droplet",
+      tone: "alert",
+      showState: false,
+      visibility: {
+        condition: "numeric_state",
+        entity: "sensor.sample_water_level",
+        above: 0,
+      },
+    },
+    {
+      label: "Secondary Appliance",
+      entity: "sensor.sample_secondary_appliance_remaining",
+      icon: "power",
+      tone: "status",
+      showState: true,
+      visibility: {
+        condition: "state",
+        entity: "sensor.sample_secondary_appliance_state",
+        state: "Run",
+      },
+    },
+    {
+      label: "Secondary Appliance",
+      entity: "sensor.sample_secondary_appliance_state",
+      icon: "power",
+      tone: "status",
+      showState: true,
+      visibility: {
+        condition: "state",
+        entity: "sensor.sample_secondary_appliance_state",
+        state: "Finished",
+      },
+    },
+  ],
+  media: {
+    players: [
+      { label: "Display Player", entity: "media_player.sample_display" },
+      { label: "Sample Speaker", entity: "media_player.sample_speaker" },
+    ],
+    sonos: {
+      playerEntity: "media_player.sample_speaker",
+      favoritesSensorEntity: "sensor.sample_favorites",
+      limit: 3,
+      ignoredSources: ["TV"],
+      ignoredContentIds: ["x-rincon-stream:"],
+    },
+    idlePlaylistButtons: [
+      {
+        label: "Preset One",
+        icon: "playlist",
+        service: {
+          domain: "homeassistant",
+          service: "toggle",
+          data: { entity_id: "switch.sample_preset_one" },
+        },
+      },
+      {
+        label: "Ambient Mode",
+        icon: "droplet",
+        service: {
+          domain: "homeassistant",
+          service: "toggle",
+          data: { entity_id: "switch.sample_ambient_mode" },
+        },
+      },
+    ],
+  },
+};
+
+export function normalizeDashboardConfig(input?: unknown): DashboardConfig {
+  const override = isRecord(input) ? input : {};
+  const media = isRecord(override.media) ? override.media : {};
+  const environment = isRecord(override.environment) ? override.environment : {};
+
+  return {
+    weather: {
+      ...defaultDashboardConfig.weather,
+      ...(isRecord(override.weather) ? override.weather : {}),
+    },
+    environment: {
+      ...defaultDashboardConfig.environment,
+      ...environment,
+    },
+    sceneTiles: Array.isArray(override.sceneTiles)
+      ? override.sceneTiles
+      : defaultDashboardConfig.sceneTiles,
+    controls: Array.isArray(override.controls)
+      ? override.controls
+      : defaultDashboardConfig.controls,
+    badges: Array.isArray(override.badges)
+      ? override.badges
+      : defaultDashboardConfig.badges,
+    media: {
+      players: Array.isArray(media.players)
+        ? media.players
+        : defaultDashboardConfig.media.players,
+      sonos: isRecord(media.sonos)
+        ? {
+            ...defaultDashboardConfig.media.sonos,
+            ...media.sonos,
+          }
+        : defaultDashboardConfig.media.sonos,
+      idlePlaylistButtons: Array.isArray(media.idlePlaylistButtons)
+        ? media.idlePlaylistButtons
+        : defaultDashboardConfig.media.idlePlaylistButtons,
+    },
+  } as DashboardConfig;
+}
+
+export function panelConfigToDashboardConfig(panelConfig: unknown): DashboardConfig {
+  if (!isRecord(panelConfig)) {
+    return normalizeDashboardConfig();
+  }
+
+  return normalizeDashboardConfig(
+    isRecord(panelConfig.dashboard) ? panelConfig.dashboard : panelConfig,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

@@ -1,0 +1,2079 @@
+import { ChartSampler, buildSeriesPath, paddedRange } from "./chart";
+import { panelConfigToDashboardConfig } from "./config";
+import { iconSvg } from "./icons";
+import {
+  getMediaDisplayMode,
+  MediaActivityTracker,
+  parseSonosFavorites,
+  resolveSonosPlaylistName,
+  sonosFavoriteButton,
+} from "./media";
+import {
+  callConfiguredService,
+  mediaService,
+  serviceForToggleEntity,
+} from "./services";
+import type {
+  ControlConfig,
+  DashboardBadgeConfig,
+  DashboardConfig,
+  HassEntity,
+  HassLike,
+  PanelInfo,
+  SceneTileConfig,
+  ServiceCall,
+} from "./types";
+
+const CHART_WIDTH = 620;
+const CHART_HEIGHT = 96;
+
+type OptimisticMediaStart = {
+  title: string;
+  contentId?: string;
+  loading: boolean;
+  version: number;
+};
+
+export class DashyDashboardPanel extends HTMLElement {
+  private readonly view: ShadowRoot;
+  private readonly mediaTracker = new MediaActivityTracker();
+  private readonly optimisticStates = new Map<string, string>();
+  private readonly optimisticVersions = new Map<string, number>();
+  private readonly optimisticMediaStarts = new Map<
+    string,
+    OptimisticMediaStart
+  >();
+  private config: DashboardConfig = panelConfigToDashboardConfig(undefined);
+  private sampler = new ChartSampler(this.config.environment.maxSamples);
+  private clockTimer: number | undefined;
+  private toastTimer: number | undefined;
+  private optimisticVersion = 0;
+  private isFavoritesMenuOpen = false;
+  private currentHass: HassLike | undefined;
+  private currentPanel: PanelInfo | undefined;
+  private pageOverflow:
+    | {
+        body: string;
+        documentElement: string;
+      }
+    | undefined;
+
+  constructor() {
+    super();
+    this.view = this.attachShadow({ mode: "open" });
+  }
+
+  connectedCallback(): void {
+    this.lockPageOverflow();
+    this.renderShell();
+    this.view.addEventListener("click", this.handleClick);
+    this.updateClock();
+    this.clockTimer = window.setInterval(() => this.updateClock(), 15_000);
+    this.updateAll();
+  }
+
+  disconnectedCallback(): void {
+    this.view.removeEventListener("click", this.handleClick);
+    if (this.clockTimer !== undefined) {
+      window.clearInterval(this.clockTimer);
+    }
+    if (this.toastTimer !== undefined) {
+      window.clearTimeout(this.toastTimer);
+    }
+    this.restorePageOverflow();
+  }
+
+  set hass(value: HassLike | undefined) {
+    this.currentHass = value;
+    this.reconcileOptimisticStates(value);
+    this.sampleEnvironment();
+    this.mediaTracker.update(this.config.media.players, value);
+    this.updateAll();
+  }
+
+  get hass(): HassLike | undefined {
+    return this.currentHass;
+  }
+
+  set panel(value: PanelInfo | undefined) {
+    this.currentPanel = value;
+    this.config = panelConfigToDashboardConfig(value?.config);
+    this.sampler = new ChartSampler(this.config.environment.maxSamples);
+    this.updateAll();
+  }
+
+  get panel(): PanelInfo | undefined {
+    return this.currentPanel;
+  }
+
+  private readonly handleClick = (event: Event): void => {
+    const target = event.target as Element | null;
+    const button = target?.closest<HTMLButtonElement>(
+      "button[data-dashy-action]",
+    );
+    if (!button) {
+      if (this.isFavoritesMenuOpen) {
+        this.isFavoritesMenuOpen = false;
+        this.updateMedia();
+      }
+      return;
+    }
+
+    void this.routeAction(button);
+  };
+
+  private lockPageOverflow(): void {
+    if (this.pageOverflow) {
+      return;
+    }
+
+    this.pageOverflow = {
+      body: document.body.style.overflow,
+      documentElement: document.documentElement.style.overflow,
+    };
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+  }
+
+  private restorePageOverflow(): void {
+    if (!this.pageOverflow) {
+      return;
+    }
+
+    document.documentElement.style.overflow = this.pageOverflow.documentElement;
+    document.body.style.overflow = this.pageOverflow.body;
+    this.pageOverflow = undefined;
+  }
+
+  private async routeAction(button: HTMLButtonElement): Promise<void> {
+    const action = button.dataset.dashyAction;
+    const index = Number(button.dataset.index);
+
+    if (action === "scene") {
+      await this.callScene(this.config.sceneTiles[index]);
+      return;
+    }
+
+    if (action === "badge") {
+      this.openMoreInfo(button.dataset.entity);
+      return;
+    }
+
+    if (action?.startsWith("control-")) {
+      await this.callControl(
+        this.config.controls[index],
+        action.replace("control-", ""),
+      );
+      return;
+    }
+
+    if (action === "media-favorites-menu") {
+      this.isFavoritesMenuOpen = !this.isFavoritesMenuOpen;
+      this.updateMedia();
+      return;
+    }
+
+    if (action === "sonos-favorite") {
+      this.isFavoritesMenuOpen = false;
+      this.updateMedia();
+      await this.callSonosFavorite(index);
+      return;
+    }
+
+    if (action?.startsWith("media-")) {
+      await this.callMedia(action.replace("media-", ""));
+      return;
+    }
+
+    if (action === "playlist") {
+      const mode = getMediaDisplayMode(
+        this.config.media,
+        this.mediaTracker,
+        this.currentHass,
+      );
+      await this.callServiceWithOptimism(
+        mode.kind === "idle" ? mode.buttons[index]?.service : undefined,
+      );
+    }
+  }
+
+  private async callScene(tile: SceneTileConfig | undefined): Promise<void> {
+    if (!tile) {
+      return;
+    }
+
+    await this.callServiceWithOptimism(
+      tile.service ??
+        (tile.entity ? serviceForToggleEntity(tile.entity) : undefined),
+      tile.entity,
+    );
+  }
+
+  private async callControl(
+    control: ControlConfig | undefined,
+    action: string,
+  ): Promise<void> {
+    if (!control) {
+      return;
+    }
+
+    const serviceCall =
+      control.actions[action as keyof ControlConfig["actions"]] ??
+      (action === "toggle"
+        ? serviceForToggleEntity(control.entity)
+        : undefined);
+    await this.callServiceWithOptimism(serviceCall, control.entity);
+  }
+
+  private async callMedia(action: string): Promise<void> {
+    const hass = this.effectiveHass();
+    const mode = getMediaDisplayMode(
+      this.config.media,
+      this.mediaTracker,
+      hass,
+    );
+    if (mode.kind !== "player") {
+      return;
+    }
+
+    const serviceByAction: Record<string, ServiceCall> = {
+      power: mediaService(mode.player.entity, "turn_off"),
+      previous: mediaService(mode.player.entity, "media_previous_track"),
+      playpause: mediaService(mode.player.entity, "media_play_pause"),
+      next: mediaService(mode.player.entity, "media_next_track"),
+      stop: mediaService(mode.player.entity, "media_stop"),
+    };
+
+    await this.callServiceWithOptimism(
+      serviceByAction[action],
+      mode.player.entity,
+    );
+  }
+
+  private async callSonosFavorite(index: number): Promise<void> {
+    const sonos = this.config.media.sonos;
+    if (!sonos) {
+      return;
+    }
+
+    const favorite = parseSonosFavorites(
+      this.currentHass,
+      sonos.favoritesSensorEntity,
+    )[index];
+    if (!favorite) {
+      return;
+    }
+
+    await this.callServiceWithOptimism(
+      sonosFavoriteButton(favorite, sonos.playerEntity).service,
+    );
+  }
+
+  private async callServiceWithOptimism(
+    serviceCall: ServiceCall | undefined,
+    preferredEntityId?: string,
+  ): Promise<void> {
+    if (!this.currentHass || !serviceCall) {
+      return;
+    }
+
+    const entityId =
+      preferredEntityId ?? stringEntityId(serviceCall.data?.entity_id);
+    const mediaStart = entityId
+      ? this.optimisticMediaStartForService(serviceCall)
+      : undefined;
+    const mediaOptimism =
+      entityId && mediaStart
+        ? this.applyOptimisticMediaStart(entityId, mediaStart)
+        : undefined;
+    const nextState = entityId
+      ? this.optimisticStateForService(entityId, serviceCall)
+      : undefined;
+    const rollback =
+      entityId && nextState
+        ? this.applyOptimisticState(entityId, nextState)
+        : undefined;
+
+    try {
+      await callConfiguredService(this.currentHass, serviceCall);
+      if (entityId && mediaStart) {
+        this.markOptimisticMediaLoaded(entityId, mediaOptimism?.version);
+      }
+    } catch (error) {
+      mediaOptimism?.rollback();
+      rollback?.();
+      this.updateAll();
+      this.showToast(`Action failed: ${errorMessage(error)}`);
+    }
+  }
+
+  private optimisticStateForService(
+    entityId: string,
+    serviceCall: ServiceCall,
+  ): string | undefined {
+    const currentState = this.entity(entityId)?.state;
+    if (!currentState) {
+      return undefined;
+    }
+
+    if (serviceCall.service === "toggle") {
+      return isActiveState(currentState) ? "off" : "on";
+    }
+
+    if (serviceCall.service === "turn_on") {
+      return "on";
+    }
+
+    if (serviceCall.service === "turn_off") {
+      return "off";
+    }
+
+    if (serviceCall.service === "media_stop") {
+      return "idle";
+    }
+
+    if (serviceCall.service === "open_cover") {
+      return "open";
+    }
+
+    if (serviceCall.service === "close_cover") {
+      return "closed";
+    }
+
+    if (serviceCall.service === "media_play_pause") {
+      return currentState === "playing" ? "paused" : "playing";
+    }
+
+    if (serviceCall.service === "play_media") {
+      return "playing";
+    }
+
+    return undefined;
+  }
+
+  private optimisticMediaStartForService(
+    serviceCall: ServiceCall,
+  ):
+    | (Omit<OptimisticMediaStart, "version"> & { contentId?: string })
+    | undefined {
+    if (
+      serviceCall.domain !== "media_player" ||
+      serviceCall.service !== "play_media"
+    ) {
+      return undefined;
+    }
+
+    const title = optimisticMediaTitle(serviceCall.data);
+    if (!title) {
+      return undefined;
+    }
+
+    return {
+      title,
+      contentId: stringEntityId(serviceCall.data?.media_content_id),
+      loading: true,
+    };
+  }
+
+  private applyOptimisticMediaStart(
+    entityId: string,
+    start: Omit<OptimisticMediaStart, "version">,
+  ): { rollback: () => void; version: number } {
+    const hadPrevious = this.optimisticMediaStarts.has(entityId);
+    const previous = this.optimisticMediaStarts.get(entityId);
+    const version = this.optimisticVersion + 1;
+    this.optimisticVersion = version;
+    this.optimisticMediaStarts.set(entityId, { ...start, version });
+
+    return {
+      version,
+      rollback: () => {
+        if (this.optimisticMediaStarts.get(entityId)?.version !== version) {
+          return;
+        }
+
+        if (hadPrevious && previous) {
+          this.optimisticMediaStarts.set(entityId, previous);
+        } else {
+          this.optimisticMediaStarts.delete(entityId);
+        }
+      },
+    };
+  }
+
+  private markOptimisticMediaLoaded(
+    entityId: string,
+    version: number | undefined,
+  ): void {
+    if (version === undefined) {
+      return;
+    }
+
+    const start = this.optimisticMediaStarts.get(entityId);
+    if (!start || start.version !== version) {
+      return;
+    }
+
+    this.optimisticMediaStarts.set(entityId, { ...start, loading: false });
+    this.updateAll();
+  }
+
+  private applyOptimisticState(
+    entityId: string,
+    nextState: string,
+  ): () => void {
+    const hadPrevious = this.optimisticStates.has(entityId);
+    const previousState = this.optimisticStates.get(entityId);
+    const version = this.optimisticVersion + 1;
+    this.optimisticVersion = version;
+    this.optimisticStates.set(entityId, nextState);
+    this.optimisticVersions.set(entityId, version);
+    this.updateAll();
+
+    return () => {
+      if (this.optimisticVersions.get(entityId) !== version) {
+        return;
+      }
+
+      if (hadPrevious && previousState !== undefined) {
+        this.optimisticStates.set(entityId, previousState);
+      } else {
+        this.optimisticStates.delete(entityId);
+      }
+      this.optimisticVersions.delete(entityId);
+    };
+  }
+
+  private reconcileOptimisticStates(hass: HassLike | undefined): void {
+    if (!hass) {
+      return;
+    }
+
+    for (const [entityId, state] of this.optimisticStates) {
+      if (hass.states[entityId]?.state === state) {
+        this.optimisticStates.delete(entityId);
+        this.optimisticVersions.delete(entityId);
+        this.optimisticMediaStarts.delete(entityId);
+      }
+    }
+  }
+
+  private showToast(message: string): void {
+    const toast = this.view.querySelector<HTMLElement>(".toast");
+    if (!toast) {
+      return;
+    }
+
+    toast.textContent = message;
+    toast.classList.add("is-visible");
+    if (this.toastTimer !== undefined) {
+      window.clearTimeout(this.toastTimer);
+    }
+    this.toastTimer = window.setTimeout(() => {
+      toast.classList.remove("is-visible");
+    }, 4_000);
+  }
+
+  private openMoreInfo(entityId: string | undefined): void {
+    if (!entityId) {
+      return;
+    }
+
+    this.dispatchEvent(
+      new CustomEvent("hass-more-info", {
+        bubbles: true,
+        composed: true,
+        detail: { entityId },
+      }),
+    );
+  }
+
+  private renderShell(): void {
+    this.view.innerHTML = `
+      <style>${styles}</style>
+      <main class="dashboard" part="dashboard">
+        <header class="dashboard-header">
+          <div class="topbar">
+            <div class="date" data-region="date"></div>
+            <div class="time" data-region="time"></div>
+          </div>
+          <section class="badge-row" data-region="badges" aria-label="Alerts and status" hidden></section>
+        </header>
+        <section data-region="weather"></section>
+        <section data-region="environment"></section>
+        <section class="scene-grid" data-region="scenes"></section>
+        <section data-region="controls"></section>
+        <section data-region="media"></section>
+      </main>
+      <div class="toast" role="status" aria-live="polite"></div>
+    `;
+  }
+
+  private updateAll(): void {
+    if (!this.view.querySelector("[data-region='date']")) {
+      return;
+    }
+
+    this.updateClock();
+    this.updateBadges();
+    this.updateWeather();
+    this.updateEnvironment();
+    this.updateScenes();
+    this.updateControls();
+    this.updateMedia();
+  }
+
+  private updateClock(): void {
+    const now = new Date();
+    this.setRegion("date", formatDate(now));
+    this.setRegion("time", formatTime(now));
+  }
+
+  private updateBadges(): void {
+    const target = this.view.querySelector<HTMLElement>(
+      '[data-region="badges"]',
+    );
+    if (!target) {
+      return;
+    }
+
+    const badges = this.config.badges.filter((badge) =>
+      this.isBadgeVisible(badge),
+    );
+    if (badges.length === 0) {
+      if (target.innerHTML !== "") {
+        target.innerHTML = "";
+      }
+      target.hidden = true;
+      return;
+    }
+
+    this.setRegion(
+      "badges",
+      badges.map((badge) => this.renderBadge(badge)).join(""),
+    );
+    target.hidden = false;
+  }
+
+  private renderBadge(badge: DashboardBadgeConfig): string {
+    const state = badge.showState ? this.formatBadgeState(badge) : "";
+    const ariaLabel = state ? `${badge.label} ${state}` : badge.label;
+
+    return `<button class="badge is-${badge.tone}" data-dashy-action="badge" data-entity="${escapeHtml(
+      badge.entity,
+    )}" type="button" aria-label="${escapeHtml(ariaLabel)}">
+      ${iconSvg(badge.icon, "badge-icon")}
+      <span class="badge-label">${escapeHtml(badge.label)}</span>
+      ${state ? `<span class="badge-state">${escapeHtml(state)}</span>` : ""}
+    </button>`;
+  }
+
+  private isBadgeVisible(badge: DashboardBadgeConfig): boolean {
+    if (!this.currentHass?.states[badge.entity]) {
+      return false;
+    }
+
+    const entity = this.currentHass.states[badge.visibility.entity];
+    if (!entity) {
+      return false;
+    }
+
+    if (badge.visibility.condition === "state") {
+      return entity.state === badge.visibility.state;
+    }
+
+    const value = Number.parseFloat(entity.state);
+    if (!Number.isFinite(value)) {
+      return false;
+    }
+
+    if (
+      badge.visibility.above !== undefined &&
+      !(value > badge.visibility.above)
+    ) {
+      return false;
+    }
+
+    if (
+      badge.visibility.below !== undefined &&
+      !(value < badge.visibility.below)
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private formatBadgeState(badge: DashboardBadgeConfig): string {
+    const entity = this.currentHass?.states[badge.entity];
+    if (!entity) {
+      return "";
+    }
+
+    try {
+      return (
+        this.currentHass?.formatEntityState?.(entity, entity.state) ??
+        titleCase(entity.state.replaceAll("_", " "))
+      );
+    } catch {
+      return titleCase(entity.state.replaceAll("_", " "));
+    }
+  }
+
+  private updateWeather(): void {
+    const entity = this.entity(this.config.weather.entity);
+    const temperature = readNumber(entity, "temperature");
+    const humidity = readNumber(entity, "humidity");
+    const state = entity
+      ? titleCase(entity.state.replaceAll("_", " "))
+      : "Unavailable";
+
+    this.setRegion(
+      "weather",
+      `<article class="card weather-card">
+        <div class="weather-icon">${iconSvg("cloud", "weather-symbol")}</div>
+        <div class="weather-copy">
+          <div class="weather-state">${escapeHtml(state)}</div>
+        </div>
+        <div class="weather-metrics">
+          <div class="weather-temp">${formatNumeric(temperature, "°C")}</div>
+          <div class="weather-humidity">${iconSvg("droplet", "small-icon")} ${formatNumeric(
+            humidity,
+            "%",
+            0,
+          )}</div>
+        </div>
+      </article>`,
+    );
+  }
+
+  private updateEnvironment(): void {
+    const temperature = parseStateNumber(
+      this.entity(this.config.environment.temperatureEntity),
+    );
+    const humidity = parseStateNumber(
+      this.entity(this.config.environment.humidityEntity),
+    );
+    const samples = this.sampler.samples();
+    const temperatures = samples.map((sample) => sample.temperature);
+    const humidities = samples.map((sample) => sample.humidity);
+    const tempRange = paddedRange(
+      temperatures,
+      temperature - 1,
+      temperature + 1,
+    );
+    const humidityRange = paddedRange(humidities, humidity - 5, humidity + 5);
+    const tempPath = buildSeriesPath(temperatures, {
+      width: CHART_WIDTH,
+      height: CHART_HEIGHT,
+      ...tempRange,
+      flatYRatio: 0.32,
+    });
+    const humidityPath = buildSeriesPath(humidities, {
+      width: CHART_WIDTH,
+      height: CHART_HEIGHT,
+      ...humidityRange,
+      flatYRatio: 0.68,
+    });
+
+    this.setRegion(
+      "environment",
+      `<article class="card environment-card">
+        <div class="card-head">
+          <div>
+            <h2>Indoors</h2>
+          </div>
+          <div class="env-values">
+            <span class="temp-dot"></span>${formatNumeric(temperature, "°C", 1)}
+            <span class="humidity-dot"></span>${formatNumeric(humidity, "%", 0)}
+          </div>
+        </div>
+        <svg class="chart" viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" preserveAspectRatio="none" role="img" aria-label="Temperature and humidity trend">
+          <path class="chart-grid" vector-effect="non-scaling-stroke" d="M0 ${CHART_HEIGHT * 0.35} H${CHART_WIDTH} M0 ${
+            CHART_HEIGHT * 0.7
+          } H${CHART_WIDTH}"></path>
+          <path class="chart-line temperature-line" vector-effect="non-scaling-stroke" d="${tempPath}"></path>
+          <path class="chart-line humidity-line" vector-effect="non-scaling-stroke" d="${humidityPath}"></path>
+        </svg>
+      </article>`,
+    );
+  }
+
+  private updateScenes(): void {
+    this.setRegion(
+      "scenes",
+      this.config.sceneTiles
+        .map((tile, index) => {
+          const state = tile.entity
+            ? this.entity(tile.entity)?.state
+            : undefined;
+          const active = isActiveState(state);
+          return `<button class="scene-tile ${active ? "is-active" : ""}" data-dashy-action="scene" data-index="${index}" type="button">
+            ${iconSvg(tile.icon, "tile-icon")}
+            <span>${escapeHtml(tile.label)}</span>
+          </button>`;
+        })
+        .join(""),
+    );
+  }
+
+  private updateControls(): void {
+    this.setRegion(
+      "controls",
+      `<article class="card controls-card">
+        ${this.config.controls.map((control, index) => this.renderControl(control, index)).join("")}
+      </article>`,
+    );
+  }
+
+  private renderControl(control: ControlConfig, index: number): string {
+    const state = this.entity(control.entity)?.state ?? "unavailable";
+    const hasCoverControls = control.actions.open || control.actions.close;
+
+    return `<div class="control-row">
+      <div class="control-icon">${iconSvg(control.icon, "control-symbol")}</div>
+      <div class="control-copy">
+        <div>${escapeHtml(control.label)}</div>
+      </div>
+      <div class="control-actions">
+        ${
+          hasCoverControls
+            ? `<button class="cover-pill ${isCoverOpenState(state) ? "is-active" : ""}" data-dashy-action="control-open" data-index="${index}" type="button" aria-label="Open ${escapeHtml(
+                control.label,
+              )}">${iconSvg("up")}</button>
+              <button class="cover-pill ${isCoverClosedState(state) ? "is-active" : ""}" data-dashy-action="control-close" data-index="${index}" type="button" aria-label="Close ${escapeHtml(
+                control.label,
+              )}">${iconSvg("down")}</button>`
+            : `<button class="toggle ${state === "on" ? "is-on" : ""}" data-dashy-action="control-toggle" data-index="${index}" type="button" aria-label="Toggle ${escapeHtml(
+                control.label,
+              )}"><span></span></button>`
+        }
+      </div>
+    </div>`;
+  }
+
+  private updateMedia(): void {
+    const hass = this.effectiveHass();
+    const mode = getMediaDisplayMode(
+      this.config.media,
+      this.mediaTracker,
+      hass,
+    );
+    if (mode.kind === "idle") {
+      this.setRegion(
+        "media",
+        `<article class="card media-card idle-media">
+          <div class="media-heading">
+            <div>
+              <h2>Start Music</h2>
+            </div>
+          </div>
+          <div class="playlist-grid">
+            ${mode.buttons
+              .map(
+                (
+                  button,
+                  index,
+                ) => `<button class="playlist-button" data-dashy-action="playlist" data-index="${index}" type="button">
+                  ${iconSvg(button.icon, "playlist-icon")}
+                  <span>${escapeHtml(button.label)}</span>
+                </button>`,
+              )
+              .join("")}
+          </div>
+        </article>`,
+      );
+      return;
+    }
+
+    const player = mode.player;
+    const entity = hass?.states[player.entity];
+    const attrs = entity?.attributes ?? {};
+    if (player.entity === this.config.media.sonos?.playerEntity) {
+      this.setRegion("media", this.renderSonosPlayer(player, entity));
+      return;
+    }
+
+    const title =
+      stringAttr(attrs.media_title) ||
+      stringAttr(attrs.media_artist) ||
+      player.label;
+    const subtitle =
+      [
+        stringAttr(attrs.media_artist),
+        stringAttr(attrs.app_name) || stringAttr(attrs.source),
+      ]
+        .filter(Boolean)
+        .join(" · ") || titleCase(entity?.state ?? "playing");
+    const progress = progressPercent(attrs);
+
+    this.setRegion(
+      "media",
+      `<article class="media-card now-playing">
+        <div class="media-heading">
+          <div>
+            <p class="media-title">${escapeHtml(title)}</p>
+            <span>${escapeHtml(subtitle)}</span>
+          </div>
+        </div>
+        <div class="media-body">
+          <div class="media-controls">
+            <button data-dashy-action="media-power" type="button" aria-label="Turn off">${iconSvg(
+              "power",
+            )}</button>
+            <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
+              "previous",
+            )}</button>
+            <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
+              entity?.state === "playing" ? "pause" : "play",
+            )}</button>
+            <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
+              "skip",
+            )}</button>
+          </div>
+          <div class="progress"><span style="width: ${progress}%"></span></div>
+        </div>
+      </article>`,
+    );
+  }
+
+  private renderSonosPlayer(
+    player: { label: string; entity: string },
+    entity: HassEntity | undefined,
+  ): string {
+    const favorites = parseSonosFavorites(
+      this.currentHass,
+      this.config.media.sonos?.favoritesSensorEntity ?? "",
+    );
+    const playlistName = resolveSonosPlaylistName(
+      entity,
+      favorites,
+      player.label,
+    );
+    const loading =
+      this.optimisticMediaStarts.get(player.entity)?.loading === true;
+    const artist = stringAttr(entity?.attributes.media_artist);
+    const mediaTitle = stringAttr(entity?.attributes.media_title);
+    const title = loading
+      ? "Starting..."
+      : artist && mediaTitle
+        ? `${artist} - ${mediaTitle}`
+        : mediaTitle || playlistName;
+    const picture = stringAttr(entity?.attributes.entity_picture);
+    const progress = progressPercent(entity?.attributes ?? {});
+    const artStyle = picture
+      ? ` style="--media-art: url(&quot;${escapeHtml(picture)}&quot;)"`
+      : "";
+
+    return `<article class="media-card now-playing sonos-playing ${loading ? "is-loading" : ""}" aria-busy="${loading ? "true" : "false"}"${artStyle}>
+      <div class="sonos-art"></div>
+      <div class="media-heading sonos-heading">
+        <div class="sonos-room">
+          ${iconSvg("music", "media-source-icon")}
+          <h2>${escapeHtml(playlistName)}</h2>
+        </div>
+        <button class="icon-button media-more" data-dashy-action="media-favorites-menu" type="button" aria-label="Choose Sonos favorite" aria-expanded="${
+          this.isFavoritesMenuOpen ? "true" : "false"
+        }">${iconSvg("more")}</button>
+      </div>
+      <div class="media-body">
+        <p class="media-title">${escapeHtml(title)}</p>
+        <div class="media-controls">
+          <button data-dashy-action="media-stop" type="button" aria-label="Stop">${iconSvg(
+            "stop",
+          )}</button>
+          <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
+            "previous",
+          )}</button>
+          <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
+            entity?.state === "playing" ? "pause" : "play",
+          )}</button>
+          <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
+            "skip",
+          )}</button>
+        </div>
+        <div class="progress"><span style="width: ${progress}%"></span></div>
+      </div>
+      ${
+        this.isFavoritesMenuOpen
+          ? `<div class="favorites-popover" role="menu" aria-label="Sonos favorites">
+              ${favorites
+                .slice(0, 10)
+                .map(
+                  (favorite, index) =>
+                    `<button data-dashy-action="sonos-favorite" data-index="${index}" type="button" role="menuitem">${escapeHtml(
+                      favorite.title,
+                    )}</button>`,
+                )
+                .join("")}
+            </div>`
+          : ""
+      }
+    </article>`;
+  }
+
+  private sampleEnvironment(): void {
+    const temperature = parseStateNumber(
+      this.entity(this.config.environment.temperatureEntity),
+    );
+    const humidity = parseStateNumber(
+      this.entity(this.config.environment.humidityEntity),
+    );
+    this.sampler.add(temperature, humidity);
+  }
+
+  private entity(entityId: string): HassEntity | undefined {
+    const entity = this.currentHass?.states[entityId];
+    const optimisticState = this.optimisticStates.get(entityId);
+    const optimisticMediaStart = this.optimisticMediaStarts.get(entityId);
+    if (!entity && !optimisticMediaStart) {
+      return entity;
+    }
+
+    const baseEntity =
+      entity ??
+      ({
+        entity_id: entityId,
+        state: "idle",
+        attributes: {},
+      } satisfies HassEntity);
+
+    return {
+      ...baseEntity,
+      state: optimisticState ?? baseEntity.state,
+      attributes: optimisticMediaStart
+        ? {
+            ...baseEntity.attributes,
+            media_content_id:
+              optimisticMediaStart.contentId ??
+              baseEntity.attributes.media_content_id,
+            media_playlist: optimisticMediaStart.title,
+          }
+        : baseEntity.attributes,
+    };
+  }
+
+  private effectiveHass(): HassLike | undefined {
+    if (!this.currentHass) {
+      return undefined;
+    }
+
+    const states = { ...this.currentHass.states };
+    for (const entityId of new Set([
+      ...this.optimisticStates.keys(),
+      ...this.optimisticMediaStarts.keys(),
+    ])) {
+      const entity = this.entity(entityId);
+      if (entity) {
+        states[entityId] = entity;
+      }
+    }
+
+    return { ...this.currentHass, states };
+  }
+
+  private setRegion(region: string, html: string): void {
+    const target = this.view.querySelector(`[data-region="${region}"]`);
+    if (target && target.innerHTML !== html) {
+      target.innerHTML = html;
+    }
+  }
+}
+
+function parseStateNumber(entity: HassEntity | undefined): number {
+  const value = Number.parseFloat(String(entity?.state ?? ""));
+  return Number.isFinite(value) ? value : Number.NaN;
+}
+
+function readNumber(entity: HassEntity | undefined, attribute: string): number {
+  const value = Number(entity?.attributes[attribute]);
+  return Number.isFinite(value) ? value : Number.NaN;
+}
+
+function formatNumeric(
+  value: number,
+  unit: string,
+  fractionDigits = 1,
+): string {
+  if (!Number.isFinite(value)) {
+    return `-- ${unit}`;
+  }
+
+  return `${value.toFixed(fractionDigits)} ${unit}`;
+}
+
+function formatDate(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatTime(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function titleCase(value: string): string {
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isActiveState(state: string | undefined): boolean {
+  return state === "on" || state === "playing" || state === "open";
+}
+
+function isCoverOpenState(state: string | undefined): boolean {
+  return state === "open" || state === "opening";
+}
+
+function isCoverClosedState(state: string | undefined): boolean {
+  return state === "closed" || state === "closing";
+}
+
+function stringEntityId(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optimisticMediaTitle(
+  data: Record<string, unknown> | undefined,
+): string {
+  const extra = data?.extra;
+  if (extra && typeof extra === "object") {
+    const title = (extra as Record<string, unknown>).title;
+    if (typeof title === "string" && title.length > 0) {
+      return title;
+    }
+  }
+
+  const title = data?.media_playlist ?? data?.title;
+  return typeof title === "string" ? title : "";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : "Home Assistant service failed";
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function stringAttr(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function progressPercent(attrs: Record<string, unknown>): number {
+  const duration = Number(attrs.media_duration);
+  const position = Number(attrs.media_position);
+  if (
+    !Number.isFinite(duration) ||
+    !Number.isFinite(position) ||
+    duration <= 0
+  ) {
+    return 72;
+  }
+
+  return Math.max(0, Math.min(100, Math.round((position / duration) * 100)));
+}
+
+const styles = `
+  :host {
+    display: block;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    color: #ececec;
+    background: #0d0d0e;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  button {
+    color: inherit;
+    font: inherit;
+    border: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .dashboard {
+    width: min(100%, 1000px);
+    height: 100%;
+    min-height: 0;
+    margin: 0 auto;
+    padding: clamp(12px, 2.8vw, 24px);
+    display: flex;
+    flex-direction: column;
+    gap: clamp(8px, 1.3vw, 12px);
+    overflow: hidden;
+    overflow: clip;
+  }
+
+  .dashboard-header {
+    display: grid;
+    gap: clamp(8px, 1.2vw, 12px);
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding-bottom: clamp(18px, 3vw, 32px);
+  }
+
+  .date,
+  .time {
+    font-size: clamp(26px, 5.2vw, 41px);
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  .badge-row {
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .badge-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .badge-row[hidden] {
+    display: none;
+  }
+
+  .badge {
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 34px;
+    padding: 7px 11px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    font-size: clamp(14px, 2.2vw, 18px);
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .badge.is-alert {
+    background: #d80000;
+    color: #fff;
+  }
+
+  .badge.is-status {
+    background: #fff;
+    color: #111;
+  }
+
+  .badge-icon {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+  }
+
+  .badge-label,
+  .badge-state {
+    min-width: 0;
+  }
+
+  .card,
+  .media-card {
+    border: 1px solid #343436;
+    background: #1b1b1c;
+    border-radius: 18px;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 2%);
+  }
+
+  .weather-card {
+    padding: clamp(14px, 2.8vw, 24px);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: clamp(10px, 2vw, 18px);
+  }
+
+  .weather-symbol {
+    width: clamp(42px, 7vw, 62px);
+    height: clamp(42px, 7vw, 62px);
+    color: #e8e8e8;
+  }
+
+  .weather-copy {
+    min-width: 0;
+  }
+
+  .weather-state {
+    font-size: clamp(30px, 5.4vw, 50px);
+    line-height: 1.05;
+    white-space: nowrap;
+  }
+
+  .muted {
+    color: #a6a6aa;
+  }
+
+  .weather-humidity {
+    font-size: clamp(17px, 2.8vw, 26px);
+  }
+
+  .weather-metrics {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .weather-temp {
+    font-size: clamp(30px, 5.4vw, 50px);
+    line-height: 1.1;
+  }
+
+  .weather-humidity {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #a6a6aa;
+  }
+
+  .small-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .environment-card {
+    padding: 16px 20px 14px;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 6px;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: clamp(24px, 4vw, 31px);
+    line-height: 1.2;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  .env-values {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: clamp(22px, 4vw, 34px);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .temp-dot,
+  .humidity-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    display: inline-block;
+  }
+
+  .temp-dot {
+    background: #ff595f;
+  }
+
+  .humidity-dot {
+    background: #38a8ff;
+    margin-left: 8px;
+  }
+
+  .chart {
+    width: 100%;
+    height: clamp(48px, 8vw, 72px);
+    display: block;
+    overflow: visible;
+  }
+
+  .chart-grid {
+    fill: none;
+    stroke: #2a2a2d;
+    stroke-width: 1;
+  }
+
+  .chart-line {
+    fill: none;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .temperature-line {
+    stroke: #ff595f;
+  }
+
+  .humidity-line {
+    stroke: #38a8ff;
+  }
+
+  .scene-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 17vw, 170px), 1fr));
+    gap: clamp(8px, 1.3vw, 12px);
+  }
+
+  .scene-tile {
+    aspect-ratio: 1 / 0.78;
+    min-width: 0;
+    padding: 9px 8px;
+    border-radius: 14px;
+    background: #1b1b1c;
+    border: 1px solid #343436;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: #e7e7e8;
+  }
+
+  .scene-tile.is-active {
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    border-color: #8b5cf6;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+    color: #fff;
+  }
+
+  .tile-icon {
+    width: clamp(32px, 4.8vw, 42px);
+    height: clamp(32px, 4.8vw, 42px);
+  }
+
+  .scene-tile span {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font-size: clamp(15px, 2.4vw, 24px);
+    line-height: 1.05;
+  }
+
+  .controls-card {
+    padding: 16px 20px;
+    display: grid;
+    gap: 14px;
+  }
+
+  .control-row {
+    display: grid;
+    grid-template-columns: 34px 1fr auto;
+    align-items: center;
+    gap: 18px;
+    min-height: 50px;
+  }
+
+  .control-symbol {
+    width: 34px;
+    height: 34px;
+    color: #f0f0f2;
+  }
+
+  .control-copy {
+    font-size: clamp(20px, 3.8vw, 30px);
+    line-height: 1.2;
+  }
+
+  .control-copy span {
+    color: #9d9da3;
+    display: block;
+    font-size: 0.82em;
+    margin-top: 3px;
+  }
+
+  .control-actions {
+    display: flex;
+    align-items: center;
+    gap: clamp(16px, 4vw, 38px);
+  }
+
+  .icon-button {
+    width: 38px;
+    height: 38px;
+    background: transparent;
+    color: #e9e9eb;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .icon-button .icon {
+    width: 29px;
+    height: 29px;
+  }
+
+  .cover-pill {
+    width: clamp(58px, 8vw, 72px);
+    height: 42px;
+    border-radius: 999px;
+    border: 1px solid #4b4b50;
+    background: #252529;
+    color: #f0f0f2;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .cover-pill.is-active {
+    border-color: #8b5cf6;
+    background: #375eea;
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+  }
+
+  .cover-pill .icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .toggle {
+    width: 68px;
+    height: 34px;
+    padding: 3px;
+    border-radius: 999px;
+    border: 2px solid #727277;
+    background: #2c2c2f;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+  }
+
+  .toggle span {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: #a9a9ad;
+    display: block;
+  }
+
+  .toggle.is-on {
+    justify-content: flex-end;
+    border-color: #8b5cf6;
+    background: #375eea;
+  }
+
+  .toggle.is-on span {
+    background: #fff;
+  }
+
+  .media-card {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .now-playing {
+    padding: 12px 18px 14px;
+    background: #0aa0c2;
+    border-color: #20b7d6;
+    color: white;
+  }
+
+  .sonos-playing {
+    position: relative;
+    isolation: isolate;
+    overflow: visible;
+    background: #171717;
+    border-color: #3b3b3f;
+    color: #f4f0e8;
+  }
+
+  .sonos-art {
+    position: absolute;
+    inset: 1px;
+    z-index: 0;
+    overflow: hidden;
+    border-radius: inherit;
+    clip-path: inset(0 round 18px);
+    pointer-events: none;
+  }
+
+  .sonos-art::before,
+  .sonos-art::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+  }
+
+  .sonos-art::before {
+    inset: -10px;
+    background-image: var(--media-art, none);
+    background-size: cover;
+    background-position: center;
+    opacity: 0.58;
+    filter: blur(8px) saturate(0.85);
+  }
+
+  .sonos-art::after {
+    inset: 0;
+    background:
+      linear-gradient(90deg, rgb(18 18 18 / 94%) 0%, rgb(18 18 18 / 72%) 42%, rgb(18 18 18 / 25%) 100%),
+      linear-gradient(0deg, rgb(0 0 0 / 42%), rgb(0 0 0 / 8%));
+  }
+
+  .sonos-heading,
+  .sonos-playing .media-body {
+    position: relative;
+    z-index: 1;
+  }
+
+  .media-heading.sonos-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .sonos-room {
+    display: inline-flex;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 10px;
+  }
+
+  .sonos-room .media-source-icon {
+    flex: 0 0 auto;
+    color: #d7bf82;
+  }
+
+  .sonos-room h2 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #d7bf82;
+  }
+
+  .sonos-playing .media-title {
+    max-width: 72%;
+    color: #e1c98b;
+  }
+
+  .sonos-playing.is-loading .media-title {
+    opacity: 0.78;
+  }
+
+  .sonos-playing .media-controls {
+    color: #e1c98b;
+  }
+
+  .sonos-playing .progress {
+    background: rgb(255 255 255 / 30%);
+  }
+
+  .sonos-playing .progress span {
+    background: #c3aa6c;
+  }
+
+  .sonos-playing.is-loading .progress span {
+    width: 38% !important;
+    animation: loading-progress 1.1s ease-in-out infinite alternate;
+  }
+
+  @keyframes loading-progress {
+    from {
+      transform: translateX(-35%);
+    }
+    to {
+      transform: translateX(150%);
+    }
+  }
+
+  .media-more {
+    position: relative;
+    z-index: 4;
+  }
+
+  .favorites-popover {
+    position: absolute;
+    top: auto;
+    bottom: calc(100% - 44px);
+    right: 12px;
+    z-index: 5;
+    width: min(290px, calc(100% - 24px));
+    max-height: min(420px, calc(100dvh - 24px));
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid rgb(255 255 255 / 16%);
+    border-radius: 12px;
+    background: rgb(22 22 24 / 96%);
+    box-shadow: 0 14px 38px rgb(0 0 0 / 40%);
+  }
+
+  .favorites-popover button {
+    width: 100%;
+    min-height: 42px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: transparent;
+    color: #f4f0e8;
+    text-align: left;
+    font-size: 16px;
+    line-height: 1.15;
+  }
+
+  .favorites-popover button:focus-visible,
+  .favorites-popover button:hover {
+    outline: none;
+    background: rgb(255 255 255 / 10%);
+  }
+
+  .idle-media {
+    padding: 12px 16px 14px;
+  }
+
+  .media-heading {
+    display: block;
+  }
+
+  .media-source-icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .media-heading h2 {
+    font-size: clamp(18px, 2.8vw, 24px);
+    font-weight: 500;
+  }
+
+  .media-title {
+    font-size: clamp(21px, 3.5vw, 30px);
+    line-height: 1.12;
+  }
+
+  .media-subtitle {
+    display: block;
+    margin-top: 2px;
+    color: rgb(255 255 255 / 72%);
+    font-size: clamp(15px, 2.2vw, 19px);
+    line-height: 1.15;
+  }
+
+  .media-heading span {
+    display: block;
+    margin-top: 4px;
+    font-size: clamp(17px, 2.7vw, 24px);
+  }
+
+  .media-body {
+    display: grid;
+    gap: 9px;
+    margin-top: 9px;
+  }
+
+  .media-controls {
+    display: flex;
+    align-items: center;
+    gap: clamp(24px, 5vw, 48px);
+  }
+
+  .media-controls button {
+    width: 34px;
+    height: 34px;
+    background: transparent;
+    display: grid;
+    place-items: center;
+  }
+
+  .media-controls .icon {
+    width: 29px;
+    height: 29px;
+  }
+
+  .progress {
+    height: 8px;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 35%);
+    overflow: hidden;
+    align-self: end;
+  }
+
+  .progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: #ff9b00;
+  }
+
+  .playlist-grid {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .playlist-button {
+    min-height: 78px;
+    border-radius: 14px;
+    background: #242427;
+    border: 1px solid #3a3a3d;
+    display: grid;
+    place-items: center;
+    gap: 8px;
+    padding: 10px 8px;
+  }
+
+  .playlist-icon {
+    width: 28px;
+    height: 28px;
+    color: #37a6ff;
+  }
+
+  .playlist-button span {
+    font-size: clamp(16px, 2.6vw, 22px);
+    overflow-wrap: anywhere;
+  }
+
+  .idle-media .playlist-button {
+    min-height: 42px;
+    grid-template-columns: 28px minmax(0, 1fr);
+    place-items: initial;
+    align-items: center;
+    justify-items: start;
+    gap: 10px;
+    padding: 7px 10px;
+  }
+
+  .idle-media .playlist-icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .idle-media .playlist-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    overflow-wrap: normal;
+    white-space: nowrap;
+    font-size: clamp(15px, 2.4vw, 20px);
+  }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    z-index: 20;
+    max-width: min(520px, calc(100vw - 32px));
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid #8b5cf6;
+    background: #231d31;
+    color: #fff;
+    font-size: 14px;
+    line-height: 1.3;
+    text-align: center;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 8px);
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+
+  .toast.is-visible {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+
+  @media (max-width: 560px) {
+    .dashboard {
+      padding: 12px;
+    }
+
+    .controls-card {
+      padding: 14px 16px;
+      gap: 12px;
+    }
+
+    .control-row {
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      gap: 10px;
+    }
+
+    .control-copy {
+      min-width: 0;
+    }
+
+    .control-actions {
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .cover-pill {
+      width: 54px;
+      height: 40px;
+    }
+
+    .playlist-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 430px) {
+    .weather-card {
+      grid-template-columns: auto 1fr;
+    }
+
+    .weather-metrics {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      text-align: left;
+    }
+  }
+
+  @media (max-width: 380px), (max-width: 430px) and (max-height: 760px) {
+    .dashboard {
+      padding: 8px;
+      gap: 6px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding-bottom: 6px;
+    }
+
+    .date,
+    .time {
+      font-size: 22px;
+    }
+
+    .date {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .time {
+      justify-self: end;
+    }
+
+    .badge-row {
+      min-height: 30px;
+      gap: 5px;
+    }
+
+    .badge {
+      min-height: 28px;
+      padding: 5px 8px;
+      gap: 5px;
+      font-size: 13px;
+    }
+
+    .badge-icon {
+      width: 15px;
+      height: 15px;
+    }
+
+    .weather-card {
+      min-height: 72px;
+      padding: 10px 12px;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
+    .weather-symbol {
+      width: 34px;
+      height: 34px;
+    }
+
+    .weather-state,
+    .weather-temp {
+      font-size: 27px;
+    }
+
+    .weather-humidity {
+      font-size: 16px;
+    }
+
+    .small-icon {
+      width: 16px;
+      height: 16px;
+    }
+
+    .environment-card {
+      padding: 10px 12px 8px;
+    }
+
+    .card-head {
+      gap: 10px;
+      margin-bottom: 2px;
+    }
+
+    h2 {
+      font-size: 21px;
+    }
+
+    .env-values {
+      gap: 6px;
+      font-size: 21px;
+    }
+
+    .temp-dot,
+    .humidity-dot {
+      width: 8px;
+      height: 8px;
+    }
+
+    .humidity-dot {
+      margin-left: 4px;
+    }
+
+    .chart {
+      height: 38px;
+    }
+
+    .scene-grid {
+      grid-template-columns: repeat(auto-fit, minmax(clamp(54px, 17vw, 150px), 1fr));
+      gap: 6px;
+    }
+
+    .scene-tile {
+      aspect-ratio: 1 / 0.62;
+      padding: 5px;
+      border-radius: 10px;
+      gap: 3px;
+    }
+
+    .tile-icon {
+      width: 25px;
+      height: 25px;
+    }
+
+    .scene-tile span {
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .controls-card {
+      padding: 10px 12px;
+      gap: 8px;
+    }
+
+    .control-row {
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      min-height: 40px;
+      gap: 8px;
+    }
+
+    .control-symbol {
+      width: 28px;
+      height: 28px;
+    }
+
+    .control-copy {
+      font-size: 20px;
+    }
+
+    .control-actions {
+      gap: 8px;
+    }
+
+    .toggle {
+      width: 56px;
+      height: 30px;
+      padding: 2px;
+    }
+
+    .toggle span {
+      width: 24px;
+      height: 24px;
+    }
+
+    .cover-pill {
+      width: 48px;
+      height: 36px;
+    }
+
+    .cover-pill .icon {
+      width: 24px;
+      height: 24px;
+    }
+
+    .now-playing {
+      padding: 10px 12px;
+    }
+
+    .media-heading h2 {
+      font-size: 18px;
+    }
+
+    .media-title {
+      font-size: 19px;
+    }
+
+    .media-body {
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .media-controls {
+      gap: 22px;
+    }
+
+    .media-controls button {
+      width: 30px;
+      height: 30px;
+    }
+
+    .media-controls .icon {
+      width: 24px;
+      height: 24px;
+    }
+
+    .progress {
+      height: 6px;
+    }
+
+    .idle-media {
+      padding: 10px 12px;
+    }
+
+    .playlist-grid {
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .idle-media .playlist-button {
+      min-height: 34px;
+      padding: 5px 8px;
+    }
+
+    .idle-media .playlist-button span {
+      font-size: 14px;
+    }
+  }
+`;
