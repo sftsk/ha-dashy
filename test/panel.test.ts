@@ -85,6 +85,30 @@ function addSonosFavorites(hass: HassLike): HassLike {
   return hass;
 }
 
+function addSonosFavoritesWithoutArt(hass: HassLike): HassLike {
+  hass.states["sensor.sample_favorites"] = {
+    entity_id: "sensor.sample_favorites",
+    state: "5",
+    attributes: {
+      items: {
+        "favorite:sample-1": "A-List Pop",
+        "favorite:sample-2": "Bedtime Beats",
+        "favorite:sample-3": "Electronic in Spatial Audio",
+        "favorite:sample-4": "Favourite Songs",
+        "favorite:sample-5": "Lo-Fi Breeze",
+      },
+    },
+  };
+  return hass;
+}
+
+async function flushPromises(times = 5): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
 function addActiveProblemBadges(hass: HassLike): HassLike {
   hass.states["binary_sensor.sample_bin_full"] = {
     entity_id: "binary_sensor.sample_bin_full",
@@ -229,11 +253,13 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toMatch(/\.playlist-play-button\s*{[^}]*color:\s*#fff/s);
     expect(styles).toMatch(/\.playlist-play-button\s*{[^}]*background:\s*rgb\(0 0 0 \/ 28%\)/s);
     expect(styles).toMatch(
-      /\.playlist-play-button\s*{[^}]*width:\s*clamp\(44px,\s*10vw,\s*72px\);/s,
+      /\.playlist-play-button\s*{[^}]*width:\s*clamp\(30px,\s*7vw,\s*44px\);/s,
     );
     expect(styles).toMatch(
-      /\.playlist-play-button\s*{[^}]*height:\s*clamp\(44px,\s*10vw,\s*72px\);/s,
+      /\.playlist-play-button\s*{[^}]*height:\s*clamp\(30px,\s*7vw,\s*44px\);/s,
     );
+    expect(styles).not.toMatch(/\.playlist-play-button\s*{[^}]*padding:\s*22%/s);
+    expect(styles).toMatch(/\.playlist-play-button path\s*{[^}]*transform:\s*scale\(0\.9\)/s);
     expect(styles).toMatch(/\.playlist-button span\s*{[^}]*text-overflow:\s*ellipsis/s);
     expect(styles).toMatch(
       /\.idle-media \.playlist-button\s*{[^}]*padding:\s*5px 5px 11px;/s,
@@ -254,6 +280,78 @@ describe("dashy-dashboard-panel", () => {
       extra: { title: "Favorite Two" },
     });
     serviceCall.resolve();
+  });
+
+  it("hydrates idle playlist artwork from the Home Assistant Sonos media browser", async () => {
+    const callWS = vi.fn(async (message: Record<string, unknown>) => {
+      if (!message.media_content_type) {
+        return {
+          title: "Sonos",
+          media_content_type: "root",
+          media_content_id: "",
+          children: [
+            {
+              title: "Favorites",
+              media_content_type: "favorites",
+              media_content_id: "",
+              can_expand: true,
+            },
+          ],
+        };
+      }
+
+      if (message.media_content_type === "favorites") {
+        return {
+          title: "Favorites",
+          media_content_type: "favorites",
+          media_content_id: "",
+          children: [
+            {
+              title: "Playlists",
+              media_content_type: "favorites_folder",
+              media_content_id: "object.container.playlistContainer",
+              can_expand: true,
+            },
+          ],
+        };
+      }
+
+      return {
+        title: "Playlists",
+        media_content_type: "favorites_folder",
+        media_content_id: "object.container.playlistContainer",
+        children: [
+          {
+            title: "A-List Pop",
+            media_content_type: "favorite_item_id",
+            media_content_id: "favorite:sample-1",
+            thumbnail:
+              "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-1?token=abc",
+          },
+        ],
+      };
+    });
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavoritesWithoutArt(baseHass());
+    hass.callWS = callWS;
+
+    document.body.append(element);
+    element.hass = hass;
+    await flushPromises();
+
+    const firstPlaylist = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="playlist"]',
+    );
+
+    expect(callWS).toHaveBeenCalledWith({
+      type: "media_player/browse_media",
+      entity_id: "media_player.sample_speaker",
+    });
+    expect(firstPlaylist?.getAttribute("style")).toContain(
+      "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-1?token=abc",
+    );
   });
 
   it("renders the climate chart as a full-width stretched SVG", () => {
@@ -443,11 +541,29 @@ describe("dashy-dashboard-panel", () => {
     element.hass = hass;
 
     const mediaCard = element.shadowRoot?.querySelector(".now-playing");
+    const controls = mediaCard?.querySelector<HTMLElement>(".player-controls");
+    const powerButton = controls?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="media-power"]',
+    );
+    const transportButtons = [
+      ...(controls?.querySelectorAll<HTMLButtonElement>(
+        ".media-transport-controls [data-dashy-action]",
+      ) ?? []),
+    ];
+    const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(mediaCard?.textContent).toContain("Sample Video");
     expect(mediaCard?.textContent).toContain("Video App");
     expect(mediaCard?.textContent).not.toContain("Display Player");
     expect(element.shadowRoot?.querySelector(".media-more")).toBeNull();
+    expect(controls?.firstElementChild).toBe(powerButton);
+    expect(
+      transportButtons.map((button) => button.dataset.dashyAction),
+    ).toEqual(["media-previous", "media-playpause", "media-next"]);
+    expect(styles).toMatch(/\.media-controls\.player-controls\s*{[^}]*display:\s*grid/s);
+    expect(styles).toMatch(
+      /\.media-controls\.player-controls > button\[data-dashy-action="media-power"\]\s*{[^}]*justify-self:\s*start/s,
+    );
   });
 
   it("renders Display Player when Sonos is only relaying TV audio", () => {
@@ -528,6 +644,12 @@ describe("dashy-dashboard-panel", () => {
     const shuffleButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
       '[data-dashy-action="media-shuffle"]',
     );
+    const controls = mediaCard?.querySelector<HTMLElement>(".sonos-controls");
+    const transportButtons = [
+      ...(controls?.querySelectorAll<HTMLButtonElement>(
+        ".media-transport-controls [data-dashy-action]",
+      ) ?? []),
+    ];
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(mediaCard?.textContent).toContain("Sample artist should stay hidden - Sample track should stay hidden");
@@ -539,8 +661,14 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.querySelector(".sonos-room")?.textContent).not.toContain("Sample Speaker");
     expect(mediaCard?.querySelector('[aria-label="Turn off"]')).toBeNull();
     expect(stopButton?.getAttribute("aria-label")).toBe("Stop");
+    expect(stopButton?.querySelector(".media-stop-icon")).not.toBeNull();
     expect(shuffleButton?.getAttribute("aria-label")).toBe("Turn shuffle off");
     expect(shuffleButton?.classList.contains("is-active")).toBe(true);
+    expect(controls?.firstElementChild).toBe(stopButton);
+    expect(controls?.lastElementChild).toBe(shuffleButton);
+    expect(
+      transportButtons.map((button) => button.dataset.dashyAction),
+    ).toEqual(["media-previous", "media-playpause", "media-next"]);
     expect(mediaCard?.getAttribute("style")).toContain("/api/media_player_proxy/media_player.sample_speaker");
     expect(menuButton).not.toBeNull();
     expect(mediaCard?.querySelector(".sonos-art")).not.toBeNull();
@@ -556,10 +684,19 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toMatch(/\.media-heading\.sonos-heading\s*{[^}]*justify-content:\s*space-between/s);
     expect(styles).toMatch(/\.sonos-room h2\s*{[^}]*color:\s*#fff/s);
     expect(styles).toMatch(/\.sonos-playing \.media-title\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(/\.media-controls\.sonos-controls,\s*\.media-controls\.player-controls\s*{[^}]*display:\s*grid/s);
     expect(styles).toMatch(
-      /\.media-controls button\[data-dashy-action="media-stop"\] \.icon\s*{[^}]*transform:\s*scale\(1\.3\)/s,
+      /\.media-controls\.sonos-controls,\s*\.media-controls\.player-controls\s*{[^}]*grid-template-columns:\s*minmax\(34px,\s*1fr\) auto minmax\(34px,\s*1fr\)/s,
     );
-    expect(styles).toMatch(/\.media-controls button\.is-active\s*{[^}]*background:\s*rgb\(255 255 255 \/ 18%\)/s);
+    expect(styles).toMatch(/\.media-transport-controls\s*{[^}]*justify-self:\s*center/s);
+    expect(styles).toMatch(
+      /\.media-controls\.sonos-controls > button\[data-dashy-action="media-stop"\]\s*{[^}]*justify-self:\s*start/s,
+    );
+    expect(styles).toMatch(
+      /\.media-controls\.sonos-controls > button\[data-dashy-action="media-shuffle"\]\s*{[^}]*justify-self:\s*end/s,
+    );
+    expect(styles).toMatch(/\.media-controls button\.is-active\s*{[^}]*color:\s*#5da2ff/s);
+    expect(styles).toMatch(/\.media-controls button\.is-active\s*{[^}]*background:\s*transparent/s);
 
     shuffleButton?.click();
     await Promise.resolve();

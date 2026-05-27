@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  browseSonosFavoriteArtwork,
   MediaActivityTracker,
   getMediaDisplayMode,
   parseSonosFavorites,
@@ -308,6 +309,96 @@ describe("Sonos favorites", () => {
         title: "Favorite Three",
       },
     ]);
+  });
+
+  it("collects Sonos favorite artwork from Home Assistant media browser thumbnails", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const state: HassLike = {
+      ...hass({}),
+      callWS: async (message) => {
+        calls.push(message);
+        if (!message.media_content_type) {
+          return {
+            title: "Sonos",
+            media_content_type: "root",
+            media_content_id: "",
+            children: [
+              {
+                title: "Favorites",
+                media_content_type: "favorites",
+                media_content_id: "",
+                can_expand: true,
+              },
+            ],
+          };
+        }
+
+        if (message.media_content_type === "favorites") {
+          return {
+            title: "Favorites",
+            media_content_type: "favorites",
+            media_content_id: "",
+            children: [
+              {
+                title: "Playlists",
+                media_content_type: "favorites_folder",
+                media_content_id: "object.container.playlistContainer",
+                can_expand: true,
+              },
+            ],
+          };
+        }
+
+        return {
+          title: "Playlists",
+          media_content_type: "favorites_folder",
+          media_content_id: "object.container.playlistContainer",
+          children: [
+            {
+              title: "A-List Pop",
+              media_content_type: "favorite_item_id",
+              media_content_id: "favorite:sample-1",
+              thumbnail:
+                "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-1?token=abc",
+            },
+            {
+              title: "Bedtime Beats",
+              media_content_type: "favorite_item_id",
+              media_content_id: "favorite:sample-2",
+              thumbnail:
+                "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-2?token=abc",
+            },
+          ],
+        };
+      },
+    };
+
+    const artwork = await browseSonosFavoriteArtwork(
+      state,
+      "media_player.sample_speaker",
+    );
+
+    expect(calls).toEqual([
+      {
+        type: "media_player/browse_media",
+        entity_id: "media_player.sample_speaker",
+      },
+      {
+        type: "media_player/browse_media",
+        entity_id: "media_player.sample_speaker",
+        media_content_id: "",
+        media_content_type: "favorites",
+      },
+      {
+        type: "media_player/browse_media",
+        entity_id: "media_player.sample_speaker",
+        media_content_id: "object.container.playlistContainer",
+        media_content_type: "favorites_folder",
+      },
+    ]);
+    expect(artwork.get("favorite:sample-1")).toContain("favorite%3Asample-1");
+    expect(artwork.get("a-list pop")).toContain("favorite%3Asample-1");
+    expect(artwork.get("favorite:sample-2")).toContain("favorite%3Asample-2");
   });
 
   it("resolves the Sonos display name from favorites before falling back to media_playlist", () => {

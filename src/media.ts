@@ -75,6 +75,15 @@ export type SonosFavorite = {
   art?: string;
 };
 
+type MediaBrowserItem = {
+  title?: unknown;
+  media_content_type?: unknown;
+  media_content_id?: unknown;
+  thumbnail?: unknown;
+  children?: unknown;
+  can_expand?: unknown;
+};
+
 export function getMediaDisplayMode(
   mediaConfig: DashboardConfig["media"],
   tracker: MediaActivityTracker,
@@ -236,6 +245,156 @@ export function sonosFavoriteButton(
       },
     },
   };
+}
+
+export async function browseSonosFavoriteArtwork(
+  hass: HassLike | undefined,
+  playerEntity: string,
+): Promise<Map<string, string>> {
+  const artwork = new Map<string, string>();
+  if (!hass?.callWS) {
+    return artwork;
+  }
+
+  const root = await browseMediaPlayer(hass, playerEntity);
+  const rootItem = mediaBrowserItem(root);
+  if (!rootItem) {
+    return artwork;
+  }
+
+  collectArtwork(rootItem, artwork);
+
+  const favoritesNode =
+    mediaContentType(rootItem) === "favorites"
+      ? rootItem
+      : findChild(rootItem, (child) => mediaContentType(child) === "favorites");
+  if (!favoritesNode) {
+    collectChildrenArtwork(rootItem, artwork);
+    return artwork;
+  }
+
+  const favorites =
+    favoritesNode === rootItem && childItems(rootItem).length > 0
+      ? favoritesNode
+      : mediaBrowserItem(
+          await browseMediaPlayer(
+            hass,
+            playerEntity,
+            mediaContentId(favoritesNode) ?? "",
+            mediaContentType(favoritesNode) ?? "favorites",
+          ),
+        ) ?? favoritesNode;
+
+  collectArtwork(favorites, artwork);
+  collectChildrenArtwork(favorites, artwork);
+
+  const favoriteFolders = childItems(favorites).filter(
+    (child) =>
+      mediaContentType(child) === "favorites_folder" ||
+      (child.can_expand === true && mediaContentId(child) !== undefined),
+  );
+
+  for (const folder of favoriteFolders) {
+    const folderId = mediaContentId(folder);
+    const folderType = mediaContentType(folder);
+    if (folderId === undefined || folderType === undefined) {
+      continue;
+    }
+
+    const folderPayload = mediaBrowserItem(
+      await browseMediaPlayer(hass, playerEntity, folderId, folderType),
+    );
+    if (!folderPayload) {
+      continue;
+    }
+
+    collectArtwork(folderPayload, artwork);
+    collectChildrenArtwork(folderPayload, artwork);
+  }
+
+  return artwork;
+}
+
+export function sonosArtworkLookupKey(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+async function browseMediaPlayer(
+  hass: HassLike,
+  entityId: string,
+  mediaContentId?: string,
+  mediaContentType?: string,
+): Promise<unknown> {
+  const message: Record<string, unknown> = {
+    type: "media_player/browse_media",
+    entity_id: entityId,
+  };
+
+  if (mediaContentId !== undefined) {
+    message.media_content_id = mediaContentId;
+  }
+  if (mediaContentType !== undefined) {
+    message.media_content_type = mediaContentType;
+  }
+
+  return hass.callWS?.(message);
+}
+
+function collectChildrenArtwork(
+  item: MediaBrowserItem,
+  artwork: Map<string, string>,
+): void {
+  for (const child of childItems(item)) {
+    collectArtwork(child, artwork);
+  }
+}
+
+function collectArtwork(
+  item: MediaBrowserItem,
+  artwork: Map<string, string>,
+): void {
+  const thumbnail = artValue(item.thumbnail);
+  if (!thumbnail) {
+    return;
+  }
+
+  const id = mediaContentId(item);
+  const title = stringValue(item.title);
+  if (id) {
+    artwork.set(id, thumbnail);
+  }
+  if (title) {
+    artwork.set(sonosArtworkLookupKey(title), thumbnail);
+  }
+}
+
+function findChild(
+  item: MediaBrowserItem,
+  predicate: (child: MediaBrowserItem) => boolean,
+): MediaBrowserItem | undefined {
+  return childItems(item).find(predicate);
+}
+
+function childItems(item: MediaBrowserItem): MediaBrowserItem[] {
+  return Array.isArray(item.children)
+    ? item.children
+        .map((child) => mediaBrowserItem(child))
+        .filter((child): child is MediaBrowserItem => child !== undefined)
+    : [];
+}
+
+function mediaBrowserItem(value: unknown): MediaBrowserItem | undefined {
+  return value && typeof value === "object"
+    ? (value as MediaBrowserItem)
+    : undefined;
+}
+
+function mediaContentId(item: MediaBrowserItem): string | undefined {
+  return stringValue(item.media_content_id);
+}
+
+function mediaContentType(item: MediaBrowserItem): string | undefined {
+  return stringValue(item.media_content_type);
 }
 
 function isSonosMusicSession(entity: HassEntity | undefined): entity is HassEntity {

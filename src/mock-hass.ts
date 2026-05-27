@@ -59,26 +59,11 @@ export function attachMockHomeAssistant(element: DashyElement): void {
     "switch.sample_ambient_mode": entity("switch.sample_ambient_mode", "off"),
     "sensor.sample_favorites": entity("sensor.sample_favorites", "6", {
       items: {
-        "favorite:sample-1": {
-          title: "Favorite One",
-          thumbnail: MOCK_ART,
-        },
-        "favorite:sample-2": {
-          title: "Favorite Two",
-          thumbnail: MOCK_ART,
-        },
-        "favorite:sample-3": {
-          title: "Favorite Three",
-          thumbnail: MOCK_ART,
-        },
-        "favorite:sample-4": {
-          title: "Favorite Four",
-          thumbnail: MOCK_ART,
-        },
-        "favorite:sample-5": {
-          title: "Favorite Five",
-          thumbnail: MOCK_ART,
-        },
+        "favorite:sample-1": "Favorite One",
+        "favorite:sample-2": "Favorite Two",
+        "favorite:sample-3": "Favorite Three",
+        "favorite:sample-4": "Favorite Four",
+        "favorite:sample-5": "Favorite Five",
         "favorite:sample-6": "Favorite Six",
       },
     }),
@@ -99,6 +84,7 @@ export function attachMockHomeAssistant(element: DashyElement): void {
       }
       element.hass = { ...hass, states: { ...states } };
     },
+    callWS: async (message) => mockBrowseMedia(message),
   };
 
   element.panel = { config: {} };
@@ -191,6 +177,68 @@ function entity(
       friendly_name: entityId.split(".")[1]?.replaceAll("_", " ") ?? entityId,
       ...attributes,
     },
+  };
+}
+
+function mockBrowseMedia(message: Record<string, unknown>): Record<string, unknown> {
+  if (!message.media_content_type) {
+    return {
+      title: "Sonos",
+      media_content_type: "root",
+      media_content_id: "",
+      can_play: false,
+      can_expand: true,
+      children: [
+        {
+          title: "Favorites",
+          media_content_type: "favorites",
+          media_content_id: "",
+          can_play: false,
+          can_expand: true,
+        },
+      ],
+    };
+  }
+
+  if (message.media_content_type === "favorites") {
+    return {
+      title: "Favorites",
+      media_content_type: "favorites",
+      media_content_id: "",
+      can_play: false,
+      can_expand: true,
+      children: [
+        {
+          title: "Playlists",
+          media_content_type: "favorites_folder",
+          media_content_id: "object.container.playlistContainer",
+          can_play: false,
+          can_expand: true,
+        },
+      ],
+    };
+  }
+
+  return {
+    title: "Playlists",
+    media_content_type: "favorites_folder",
+    media_content_id: "object.container.playlistContainer",
+    can_play: false,
+    can_expand: true,
+    children: [
+      "Favorite One",
+      "Favorite Two",
+      "Favorite Three",
+      "Favorite Four",
+      "Favorite Five",
+    ].map((title, index) => ({
+      title,
+      media_content_type: "favorite_item_id",
+      media_content_id: `favorite:sample-${index + 1}`,
+      can_play: true,
+      can_expand: false,
+      thumbnail: MOCK_ART,
+    })),
   };
 }
 

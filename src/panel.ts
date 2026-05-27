@@ -2,10 +2,12 @@ import { ChartSampler, buildSeriesPath, paddedRange } from "./chart";
 import { panelConfigToDashboardConfig } from "./config";
 import { iconSvg } from "./icons";
 import {
+  browseSonosFavoriteArtwork,
   getMediaDisplayMode,
   MediaActivityTracker,
   parseSonosFavorites,
   resolveSonosPlaylistName,
+  sonosArtworkLookupKey,
   sonosFavoriteButton,
 } from "./media";
 import {
@@ -20,6 +22,7 @@ import type {
   HassEntity,
   HassLike,
   PanelInfo,
+  PlaylistButtonConfig,
   SceneTileConfig,
   ServiceCall,
 } from "./types";
@@ -52,6 +55,9 @@ export class DashyDashboardPanel extends HTMLElement {
   private isFavoritesMenuOpen = false;
   private currentHass: HassLike | undefined;
   private currentPanel: PanelInfo | undefined;
+  private readonly sonosArtwork = new Map<string, string>();
+  private sonosArtworkRequestKey = "";
+  private sonosArtworkRequestVersion = 0;
   private pageOverflow:
     | {
         body: string;
@@ -71,6 +77,7 @@ export class DashyDashboardPanel extends HTMLElement {
     this.updateClock();
     this.clockTimer = window.setInterval(() => this.updateClock(), 15_000);
     this.updateAll();
+    void this.refreshSonosArtwork();
   }
 
   disconnectedCallback(): void {
@@ -90,6 +97,7 @@ export class DashyDashboardPanel extends HTMLElement {
     this.sampleEnvironment();
     this.mediaTracker.update(this.config.media.players, value);
     this.updateAll();
+    void this.refreshSonosArtwork();
   }
 
   get hass(): HassLike | undefined {
@@ -101,6 +109,7 @@ export class DashyDashboardPanel extends HTMLElement {
     this.config = panelConfigToDashboardConfig(value?.config);
     this.sampler = new ChartSampler(this.config.environment.maxSamples);
     this.updateAll();
+    void this.refreshSonosArtwork();
   }
 
   get panel(): PanelInfo | undefined {
@@ -761,6 +770,73 @@ export class DashyDashboardPanel extends HTMLElement {
     </div>`;
   }
 
+  private async refreshSonosArtwork(): Promise<void> {
+    const hass = this.currentHass;
+    const sonos = this.config.media.sonos;
+    if (!sonos || !hass?.callWS) {
+      this.resetSonosArtwork();
+      return;
+    }
+
+    const favorites = parseSonosFavorites(hass, sonos.favoritesSensorEntity);
+    if (favorites.length === 0) {
+      this.resetSonosArtwork();
+      return;
+    }
+
+    const key = `${sonos.playerEntity}|${favorites
+      .map((favorite) => `${favorite.id}\u0000${favorite.title}`)
+      .join("\u0001")}`;
+    if (key === this.sonosArtworkRequestKey) {
+      return;
+    }
+
+    this.sonosArtworkRequestKey = key;
+    const version = this.sonosArtworkRequestVersion + 1;
+    this.sonosArtworkRequestVersion = version;
+
+    try {
+      const artwork = await browseSonosFavoriteArtwork(hass, sonos.playerEntity);
+      if (
+        this.sonosArtworkRequestVersion !== version ||
+        this.sonosArtworkRequestKey !== key
+      ) {
+        return;
+      }
+
+      this.sonosArtwork.clear();
+      for (const [artworkKey, url] of artwork) {
+        this.sonosArtwork.set(artworkKey, url);
+      }
+      this.updateMedia();
+    } catch {
+      // Home Assistant media browsing is optional; favorites still work without artwork.
+    }
+  }
+
+  private resetSonosArtwork(): void {
+    if (this.sonosArtwork.size === 0 && this.sonosArtworkRequestKey === "") {
+      return;
+    }
+
+    this.sonosArtwork.clear();
+    this.sonosArtworkRequestKey = "";
+    this.sonosArtworkRequestVersion += 1;
+    this.updateMedia();
+  }
+
+  private playlistArtwork(button: PlaylistButtonConfig): string | undefined {
+    if (button.art) {
+      return button.art;
+    }
+
+    const contentId = stringEntityId(button.service.data?.media_content_id);
+    return (
+      (contentId ? this.sonosArtwork.get(contentId) : undefined) ??
+      this.sonosArtwork.get(sonosArtworkLookupKey(button.label))
+    );
+  }
+
   private updateMedia(): void {
     const hass = this.effectiveHass();
     const mode = getMediaDisplayMode(
@@ -780,8 +856,9 @@ export class DashyDashboardPanel extends HTMLElement {
         `<div class="idle-media playlist-grid" aria-label="Start music">
             ${playlistButtons
               .map((button, index) => {
-                const artStyle = button.art
-                  ? ` style="--playlist-art: ${escapeHtml(cssUrl(button.art))}"`
+                const artwork = this.playlistArtwork(button);
+                const artStyle = artwork
+                  ? ` style="--playlist-art: ${escapeHtml(cssUrl(artwork))}"`
                   : "";
                 return `<button class="playlist-button" data-dashy-action="playlist" data-index="${index}" type="button" aria-label="Start ${escapeHtml(
                   button.label,
@@ -827,19 +904,21 @@ export class DashyDashboardPanel extends HTMLElement {
           </div>
         </div>
         <div class="media-body">
-          <div class="media-controls">
+          <div class="media-controls player-controls">
             <button data-dashy-action="media-power" type="button" aria-label="Turn off">${iconSvg(
               "power",
             )}</button>
-            <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
-              "previous",
-            )}</button>
-            <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
-              entity?.state === "playing" ? "pause" : "play",
-            )}</button>
-            <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
-              "skip",
-            )}</button>
+            <div class="media-transport-controls">
+              <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
+                "previous",
+              )}</button>
+              <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
+                entity?.state === "playing" ? "pause" : "play",
+              )}</button>
+              <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
+                "skip",
+              )}</button>
+            </div>
           </div>
           <div class="progress"><span style="width: ${progress}%"></span></div>
         </div>
@@ -889,19 +968,22 @@ export class DashyDashboardPanel extends HTMLElement {
       </div>
       <div class="media-body">
         <p class="media-title">${escapeHtml(title)}</p>
-        <div class="media-controls">
+        <div class="media-controls sonos-controls">
           <button data-dashy-action="media-stop" type="button" aria-label="Stop">${iconSvg(
-            "stop",
+            "power",
+            "icon media-stop-icon",
           )}</button>
-          <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
-            "previous",
-          )}</button>
-          <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
-            entity?.state === "playing" ? "pause" : "play",
-          )}</button>
-          <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
-            "skip",
-          )}</button>
+          <div class="media-transport-controls">
+            <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
+              "previous",
+            )}</button>
+            <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
+              entity?.state === "playing" ? "pause" : "play",
+            )}</button>
+            <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
+              "skip",
+            )}</button>
+          </div>
           <button class="${shuffleEnabled ? "is-active" : ""}" data-dashy-action="media-shuffle" type="button" aria-label="${
             shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"
           }">${iconSvg("shuffle")}</button>
@@ -1719,6 +1801,32 @@ const styles = `
     gap: clamp(24px, 5vw, 48px);
   }
 
+  .media-controls.sonos-controls,
+  .media-controls.player-controls {
+    display: grid;
+    grid-template-columns: minmax(34px, 1fr) auto minmax(34px, 1fr);
+    gap: 0;
+  }
+
+  .media-transport-controls {
+    justify-self: center;
+    display: flex;
+    align-items: center;
+    gap: clamp(24px, 5vw, 48px);
+  }
+
+  .media-controls.sonos-controls > button[data-dashy-action="media-stop"] {
+    justify-self: start;
+  }
+
+  .media-controls.player-controls > button[data-dashy-action="media-power"] {
+    justify-self: start;
+  }
+
+  .media-controls.sonos-controls > button[data-dashy-action="media-shuffle"] {
+    justify-self: end;
+  }
+
   .media-controls button {
     width: 34px;
     height: 34px;
@@ -1733,13 +1841,8 @@ const styles = `
   }
 
   .media-controls button.is-active {
-    border-radius: 999px;
-    background: rgb(255 255 255 / 18%);
-  }
-
-  .media-controls button[data-dashy-action="media-stop"] .icon {
-    transform: scale(1.3);
-    transform-origin: center;
+    color: #5da2ff;
+    background: transparent;
   }
 
   .progress {
@@ -1820,13 +1923,18 @@ const styles = `
   .playlist-play-button {
     position: relative;
     z-index: 1;
-    width: clamp(44px, 10vw, 72px);
-    height: clamp(44px, 10vw, 72px);
-    padding: 22%;
+    width: clamp(30px, 7vw, 44px);
+    height: clamp(30px, 7vw, 44px);
+    padding: 0;
     border-radius: 999px;
     background: rgb(0 0 0 / 28%);
     color: #fff;
     filter: drop-shadow(0 2px 5px rgb(0 0 0 / 55%));
+  }
+
+  .playlist-play-button path {
+    transform: scale(0.9);
+    transform-origin: center;
   }
 
   .playlist-button span {

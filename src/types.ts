@@ -15,6 +15,7 @@ export type HassLike = {
     service: string,
     data?: Record<string, unknown>,
   ) => Promise<unknown>;
+  callWS?: (message: Record<string, unknown>) => Promise<unknown>;
   formatEntityState?: (stateObj: HassEntity, state?: string) => string;
   formatEntityAttributeValue?: (
     stateObj: HassEntity,
