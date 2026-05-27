@@ -60,6 +60,7 @@ export type MediaPlayerConfig = {
 export type PlaylistButtonConfig = {
   label: string;
   icon: string;
+  art?: string;
   service: ServiceCall;
 };
 
@@ -107,7 +108,6 @@ export type DashboardConfig = {
   badges: DashboardBadgeConfig[];
   media: {
     players: MediaPlayerConfig[];
-    idlePlaylistButtons: PlaylistButtonConfig[];
     sonos?: SonosConfig;
   };
 };

@@ -14,7 +14,6 @@ const emptyDashboardConfig: DashboardConfig = {
   badges: [],
   media: {
     players: [],
-    idlePlaylistButtons: [],
   },
 };
 
@@ -65,9 +64,6 @@ export function normalizeDashboardConfig(
             ...media.sonos,
           }
         : fallbackConfig.media.sonos,
-      idlePlaylistButtons: Array.isArray(media.idlePlaylistButtons)
-        ? media.idlePlaylistButtons
-        : fallbackConfig.media.idlePlaylistButtons,
     },
   } as DashboardConfig;
 }

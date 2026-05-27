@@ -6,10 +6,11 @@ type DashyElement = HTMLElement & {
 };
 
 const MOCK_ART =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 340'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop stop-color='%230a2c2b'/%3E%3Cstop offset='.55' stop-color='%232e4a27'/%3E%3Cstop offset='1' stop-color='%23b8874a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='600' height='340' fill='url(%23g)'/%3E%3Ccircle cx='470' cy='230' r='72' fill='%23f0d7a1' fill-opacity='.28'/%3E%3Cpath d='M0 260h600v80H0z' fill='%23151617' fill-opacity='.46'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 340'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop stop-color='%230a2c2b'/%3E%3Cstop offset='.55' stop-color='%232e4a27'/%3E%3Cstop offset='1' stop-color='%23b8874a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='600' height='340' fill='url(%23g)'/%3E%3Ccircle cx='470' cy='230' r='72' fill='%23f0d7a1' fill-opacity='.28'/%3E%3C/svg%3E";
 
 export function attachMockHomeAssistant(element: DashyElement): void {
-  const mediaScenario = new URLSearchParams(window.location.search).get("mock") ?? "sonos";
+  const params = new URLSearchParams(window.location.search);
+  const mediaScenario = params.get("mock") ?? "sonos";
   const states: Record<string, HassEntity> = {
     "weather.sample_home": entity("weather.sample_home", "cloudy", {
       temperature: 19.1,
@@ -58,16 +59,33 @@ export function attachMockHomeAssistant(element: DashyElement): void {
     "switch.sample_ambient_mode": entity("switch.sample_ambient_mode", "off"),
     "sensor.sample_favorites": entity("sensor.sample_favorites", "6", {
       items: {
-        "favorite:sample-1": "Favorite One",
-        "favorite:sample-2": "Favorite Two",
-        "favorite:sample-3": "Favorite Three",
-        "favorite:sample-4": "Favorite Four",
-        "favorite:sample-5": "Favorite Five",
+        "favorite:sample-1": {
+          title: "Favorite One",
+          thumbnail: MOCK_ART,
+        },
+        "favorite:sample-2": {
+          title: "Favorite Two",
+          thumbnail: MOCK_ART,
+        },
+        "favorite:sample-3": {
+          title: "Favorite Three",
+          thumbnail: MOCK_ART,
+        },
+        "favorite:sample-4": {
+          title: "Favorite Four",
+          thumbnail: MOCK_ART,
+        },
+        "favorite:sample-5": {
+          title: "Favorite Five",
+          thumbnail: MOCK_ART,
+        },
         "favorite:sample-6": "Favorite Six",
       },
     }),
     ...mockMediaStates(mediaScenario),
   };
+
+  applyBadgeParams(states, params);
 
   const hass: HassLike = {
     states,
@@ -94,6 +112,71 @@ export function attachMockHomeAssistant(element: DashyElement): void {
     };
     element.hass = { ...hass, states: { ...states } };
   }, 5000);
+}
+
+function applyBadgeParams(
+  states: Record<string, HassEntity>,
+  params: URLSearchParams,
+): void {
+  const badges = params.get("badges")?.toLocaleLowerCase();
+  const alerts = params.get("alerts")?.toLocaleLowerCase();
+  const status =
+    params.get("status")?.toLocaleLowerCase() ??
+    (badges === "status" || badges === "running" ? "running" : undefined) ??
+    (badges === "finished" ? "finished" : undefined);
+
+  if (
+    badges === "all" ||
+    badges === "alerts" ||
+    badges === "alert" ||
+    alerts === "1" ||
+    alerts === "true" ||
+    alerts === "on"
+  ) {
+    states["binary_sensor.sample_bin_full"] = {
+      ...states["binary_sensor.sample_bin_full"],
+      state: "on",
+    };
+    states["sensor.sample_air_quality"] = {
+      ...states["sensor.sample_air_quality"],
+      state: "1250",
+    };
+    states["sensor.sample_water_level"] = {
+      ...states["sensor.sample_water_level"],
+      state: "1",
+    };
+  }
+
+  if (badges === "all" || status === "running" || status === "run") {
+    states["sensor.sample_appliance_state"] = {
+      ...states["sensor.sample_appliance_state"],
+      state: "Run",
+    };
+    states["sensor.sample_appliance_remaining"] = {
+      ...states["sensor.sample_appliance_remaining"],
+      state: "42 min",
+    };
+    states["sensor.sample_secondary_appliance_state"] = {
+      ...states["sensor.sample_secondary_appliance_state"],
+      state: "Run",
+    };
+    states["sensor.sample_secondary_appliance_remaining"] = {
+      ...states["sensor.sample_secondary_appliance_remaining"],
+      state: "18 min",
+    };
+    return;
+  }
+
+  if (status === "finished" || status === "done") {
+    states["sensor.sample_appliance_state"] = {
+      ...states["sensor.sample_appliance_state"],
+      state: "Finished",
+    };
+    states["sensor.sample_secondary_appliance_state"] = {
+      ...states["sensor.sample_secondary_appliance_state"],
+      state: "Finished",
+    };
+  }
 }
 
 function entity(
@@ -154,6 +237,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
         entity_picture: MOCK_ART,
         media_position: 82,
         media_duration: 230,
+        shuffle: false,
       }),
       "media_player.sample_display": entity(
         "media_player.sample_display",
@@ -172,6 +256,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
       entity_picture: MOCK_ART,
       media_position: 82,
       media_duration: 230,
+      shuffle: false,
     }),
     "media_player.sample_display": entity(
       "media_player.sample_display",
@@ -212,6 +297,15 @@ function mediaTransition(
         ...entityState.attributes,
         media_content_id: data?.media_content_id,
         media_playlist: title,
+      },
+    };
+  }
+  if (service === "shuffle_set") {
+    return {
+      ...entityState,
+      attributes: {
+        ...entityState.attributes,
+        shuffle: data?.shuffle === true,
       },
     };
   }

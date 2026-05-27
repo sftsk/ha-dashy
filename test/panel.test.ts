@@ -70,7 +70,10 @@ function addSonosFavorites(hass: HassLike): HassLike {
     state: "6",
     attributes: {
       items: {
-        "favorite:sample-1": "Favorite One",
+        "favorite:sample-1": {
+          title: "Favorite One With A Very Long Name That Needs Truncation",
+          thumbnail: '/local/favorite-one "mix".jpg',
+        },
         "favorite:sample-2": "Favorite Two",
         "favorite:sample-3": "Favorite Three",
         "favorite:sample-4": "Favorite Four",
@@ -156,7 +159,7 @@ describe("dashy-dashboard-panel", () => {
     document.body.style.overflow = "";
   });
 
-  it("renders idle playlist buttons and routes playlist clicks through hass.callService", async () => {
+  it("does not render idle playlist buttons without Sonos favorites", () => {
     const callService = vi.fn().mockResolvedValue(undefined);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
@@ -165,20 +168,12 @@ describe("dashy-dashboard-panel", () => {
     document.body.append(element);
     element.hass = baseHass(callService);
 
-    const button = element.shadowRoot?.querySelector<HTMLButtonElement>(
-      '[data-dashy-action="playlist"][data-index="0"]',
-    );
-
-    expect(button?.textContent).toContain("Preset One");
-    button?.click();
-    await Promise.resolve();
-
-    expect(callService).toHaveBeenCalledWith("homeassistant", "toggle", {
-      entity_id: "switch.sample_preset_one",
-    });
+    expect(element.shadowRoot?.querySelector('[data-dashy-action="playlist"]')).toBeNull();
+    expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
+    expect(callService).not.toHaveBeenCalled();
   });
 
-  it("renders top three Sonos favorites while idle and optimistically starts the selected favorite", async () => {
+  it("renders up to five Sonos favorites as compact artwork cards while idle and optimistically starts the selected favorite", async () => {
     const serviceCall = deferred();
     const callService = vi.fn().mockReturnValue(serviceCall.promise);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
@@ -195,17 +190,55 @@ describe("dashy-dashboard-panel", () => {
     ];
 
     expect(buttons.map((button) => button.textContent?.trim())).toEqual([
-      "Favorite One",
+      "Favorite One With A Very Long Name That Needs Truncation",
       "Favorite Two",
       "Favorite Three",
+      "Favorite Four",
+      "Favorite Five",
     ]);
     expect(element.shadowRoot?.querySelector(".idle-media")?.textContent).not.toContain(
       "Choose a playlist",
     );
+    expect(element.shadowRoot?.querySelector(".idle-media")?.textContent).not.toContain(
+      "Start Music",
+    );
+    expect(element.shadowRoot?.querySelector(".idle-media.card")).toBeNull();
+    expect(buttons).toHaveLength(5);
+    expect(buttons[0].getAttribute("style")).toContain(
+      '--playlist-art: url("/local/favorite-one \\"mix\\".jpg")',
+    );
+    expect(buttons[0].querySelector(".playlist-art")).not.toBeNull();
+    expect(buttons[0].querySelector(".playlist-play-button")).not.toBeNull();
+    expect(buttons[0].querySelector(".playlist-note")).toBeNull();
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
     expect(styles).toContain(".idle-media .playlist-button");
-    expect(styles).toContain("grid-template-columns: 28px minmax(0, 1fr)");
-    expect(styles).toContain("white-space: nowrap");
+    expect(styles).toContain(
+      "grid-template-columns: repeat(auto-fill, minmax(clamp(64px, 22%, 220px), 1fr))",
+    );
+    expect(styles).not.toContain(
+      "grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 22%, 220px), 1fr))",
+    );
+    expect(styles).not.toContain("clamp(64px, 22vw, 220px)");
+    expect(styles).not.toContain("clamp(72px, 23%, 260px)");
+    expect(styles).not.toContain("clamp(58px, 30%, 130px)");
+    expect(styles).toMatch(/\.playlist-button\s*{[^}]*aspect-ratio:\s*1 \/ 1;/s);
+    expect(styles).toMatch(/\.playlist-button\s*{[^}]*padding:\s*7px 7px 14px;/s);
+    expect(styles).toMatch(/\.playlist-art::after\s*{[^}]*bottom:\s*0;/s);
+    expect(styles).toMatch(/\.playlist-art::after\s*{[^}]*height:\s*58%;/s);
+    expect(styles).toMatch(/\.playlist-art::after\s*{[^}]*rgba\(0,\s*0,\s*0,\s*0\)/s);
+    expect(styles).toMatch(/\.playlist-play-button\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(/\.playlist-play-button\s*{[^}]*background:\s*rgb\(0 0 0 \/ 28%\)/s);
+    expect(styles).toMatch(
+      /\.playlist-play-button\s*{[^}]*width:\s*clamp\(44px,\s*10vw,\s*72px\);/s,
+    );
+    expect(styles).toMatch(
+      /\.playlist-play-button\s*{[^}]*height:\s*clamp\(44px,\s*10vw,\s*72px\);/s,
+    );
+    expect(styles).toMatch(/\.playlist-button span\s*{[^}]*text-overflow:\s*ellipsis/s);
+    expect(styles).toMatch(
+      /\.idle-media \.playlist-button\s*{[^}]*padding:\s*5px 5px 11px;/s,
+    );
+    expect(styles).not.toMatch(/\.playlist-button span\s*{[^}]*background:/s);
 
     buttons[1].click();
     await Promise.resolve();
@@ -447,6 +480,7 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.textContent).toContain("Sample Video");
     expect(mediaCard?.textContent).not.toContain("Sample Speaker");
     expect(element.shadowRoot?.querySelector(".media-more")).toBeNull();
+    expect(element.shadowRoot?.querySelector('[data-dashy-action="media-shuffle"]')).toBeNull();
   });
 
   it("renders Sonos playlist player with artwork background and a favorites menu", async () => {
@@ -471,6 +505,7 @@ describe("dashy-dashboard-panel", () => {
         media_playlist: "Fallback Favorite",
         media_content_id: "favorite:sample-1",
         entity_picture: "/api/media_player_proxy/media_player.sample_speaker",
+        shuffle: true,
       },
     };
     hass.states["sensor.sample_favorites"].attributes.items = {
@@ -490,6 +525,9 @@ describe("dashy-dashboard-panel", () => {
     const stopButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
       '[data-dashy-action="media-stop"]',
     );
+    const shuffleButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="media-shuffle"]',
+    );
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(mediaCard?.textContent).toContain("Sample artist should stay hidden - Sample track should stay hidden");
@@ -501,6 +539,8 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.querySelector(".sonos-room")?.textContent).not.toContain("Sample Speaker");
     expect(mediaCard?.querySelector('[aria-label="Turn off"]')).toBeNull();
     expect(stopButton?.getAttribute("aria-label")).toBe("Stop");
+    expect(shuffleButton?.getAttribute("aria-label")).toBe("Turn shuffle off");
+    expect(shuffleButton?.classList.contains("is-active")).toBe(true);
     expect(mediaCard?.getAttribute("style")).toContain("/api/media_player_proxy/media_player.sample_speaker");
     expect(menuButton).not.toBeNull();
     expect(mediaCard?.querySelector(".sonos-art")).not.toBeNull();
@@ -514,6 +554,20 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toContain(".favorites-popover");
     expect(styles).toMatch(/\.media-heading\.sonos-heading\s*{[^}]*display:\s*flex/s);
     expect(styles).toMatch(/\.media-heading\.sonos-heading\s*{[^}]*justify-content:\s*space-between/s);
+    expect(styles).toMatch(/\.sonos-room h2\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(/\.sonos-playing \.media-title\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(
+      /\.media-controls button\[data-dashy-action="media-stop"\] \.icon\s*{[^}]*transform:\s*scale\(1\.3\)/s,
+    );
+    expect(styles).toMatch(/\.media-controls button\.is-active\s*{[^}]*background:\s*rgb\(255 255 255 \/ 18%\)/s);
+
+    shuffleButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("media_player", "shuffle_set", {
+      entity_id: "media_player.sample_speaker",
+      shuffle: false,
+    });
 
     menuButton?.click();
     const favoriteButtons = [
@@ -523,7 +577,7 @@ describe("dashy-dashboard-panel", () => {
     ];
 
     expect(favoriteButtons.map((button) => button.textContent?.trim())).toEqual([
-      "Favorite One",
+      "Favorite One With A Very Long Name That Needs Truncation",
       "Favorite Two",
       "Favorite Three",
       "Favorite Four",
@@ -633,6 +687,49 @@ describe("dashy-dashboard-panel", () => {
     expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
   });
 
+  it("keeps a paused generic media player visible after it was playing", () => {
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass();
+
+    document.body.append(element);
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "playing",
+          attributes: {
+            media_title: "Sample Video",
+            app_name: "Video App",
+          },
+        },
+      },
+    };
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "paused",
+          attributes: {
+            media_title: "Sample Video",
+            app_name: "Video App",
+          },
+        },
+      },
+    };
+
+    const mediaCard = element.shadowRoot?.querySelector<HTMLElement>(".now-playing");
+
+    expect(mediaCard?.textContent).toContain("Sample Video");
+    expect(mediaCard?.querySelector('[data-dashy-action="media-playpause"]')).not.toBeNull();
+    expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
+  });
+
   it("renders weather without redundant label and keeps metrics on the main row until very narrow widths", () => {
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
@@ -695,7 +792,7 @@ describe("dashy-dashboard-panel", () => {
       /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.scene-tile\s*{[^}]*aspect-ratio:\s*1 \/ 0\.62;/,
     );
     expect(styles).toMatch(
-      /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.idle-media \.playlist-button\s*{[^}]*min-height:\s*34px;/,
+      /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.idle-media \.playlist-button\s*{[^}]*aspect-ratio:\s*1 \/ 1;/,
     );
   });
 

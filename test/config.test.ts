@@ -44,14 +44,11 @@ describe("normalizeDashboardConfig", () => {
     expect(defaultDashboardConfig.media.sonos).toEqual({
       playerEntity: "media_player.sample_speaker",
       favoritesSensorEntity: "sensor.sample_favorites",
-      limit: 3,
+      limit: 5,
       ignoredSources: ["TV"],
       ignoredContentIds: ["x-rincon-stream:"],
     });
-    expect(defaultDashboardConfig.media.idlePlaylistButtons.map((button) => button.service.data?.entity_id)).toEqual([
-      "switch.sample_preset_one",
-      "switch.sample_ambient_mode",
-    ]);
+    expect("idlePlaylistButtons" in defaultDashboardConfig.media).toBe(false);
     expect(
       defaultDashboardConfig.badges.map((badge) => ({
         label: badge.label,
@@ -153,7 +150,6 @@ describe("normalizeDashboardConfig", () => {
     const config = normalizeDashboardConfig({
       media: {
         players: [{ label: "Office Speaker", entity: "media_player.office" }],
-        idlePlaylistButtons: [],
       },
     });
 
@@ -179,7 +175,7 @@ describe("normalizeDashboardConfig", () => {
     expect(bundledConfig.controls).toEqual([]);
     expect(bundledConfig.badges).toEqual([]);
     expect(bundledConfig.media.players).toEqual([]);
-    expect(bundledConfig.media.idlePlaylistButtons).toEqual([]);
+    expect("idlePlaylistButtons" in bundledConfig.media).toBe(false);
     expect(panelConfigToDashboardConfig(undefined, bundledConfig).weather.entity).toBe(
       "weather.local_example",
     );

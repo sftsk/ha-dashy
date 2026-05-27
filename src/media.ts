@@ -39,7 +39,13 @@ export class MediaActivityTracker {
   }
 
   selected(players: MediaPlayerConfig[], hass: HassLike | undefined): MediaPlayerConfig | null {
-    const active = players.filter((player) => hass?.states[player.entity]?.state === "playing");
+    const active = players.filter((player) => {
+      const state = hass?.states[player.entity]?.state;
+      return (
+        state === "playing" ||
+        (state === "paused" && this.lastActive.has(player.entity))
+      );
+    });
     if (active.length === 0) {
       return null;
     }
@@ -66,6 +72,7 @@ export class MediaActivityTracker {
 export type SonosFavorite = {
   id: string;
   title: string;
+  art?: string;
 };
 
 export function getMediaDisplayMode(
@@ -113,7 +120,7 @@ export function getMediaDisplayMode(
 
   return {
     kind: "idle",
-    buttons: mediaConfig.idlePlaylistButtons,
+    buttons: [],
   };
 }
 
@@ -121,7 +128,7 @@ export function parseSonosFavorites(
   hass: HassLike | undefined,
   sensorEntity: string,
 ): SonosFavorite[] {
-  const items = hass?.states[sensorEntity]?.attributes.items;
+  const items = favoriteItems(hass?.states[sensorEntity]?.attributes);
   if (!items || typeof items !== "object") {
     return [];
   }
@@ -132,13 +139,7 @@ export function parseSonosFavorites(
         if (!item || typeof item !== "object") {
           return null;
         }
-        const record = item as Record<string, unknown>;
-        const id = stringValue(record.id) ?? stringValue(record.media_content_id);
-        const title =
-          stringValue(record.title) ??
-          stringValue(record.name) ??
-          stringValue(record.label);
-        return id && title ? { id, title } : null;
+        return favoriteFromRecord(item as Record<string, unknown>);
       })
       .filter((favorite): favorite is SonosFavorite => favorite !== null);
   }
@@ -153,12 +154,7 @@ export function parseSonosFavorites(
         return null;
       }
 
-      const record = value as Record<string, unknown>;
-      const title =
-        stringValue(record.title) ??
-        stringValue(record.name) ??
-        stringValue(record.label);
-      return title ? { id, title } : null;
+      return favoriteFromRecord(value as Record<string, unknown>, id);
     })
     .filter((favorite): favorite is SonosFavorite => favorite !== null);
 }
@@ -216,7 +212,7 @@ export function sonosFavoriteButtons(
   }
 
   return parseSonosFavorites(hass, sonos.favoritesSensorEntity)
-    .slice(0, limit)
+    .slice(0, Math.min(limit, 5))
     .map((favorite) => sonosFavoriteButton(favorite, sonos.playerEntity));
 }
 
@@ -227,6 +223,7 @@ export function sonosFavoriteButton(
   return {
     label: favorite.title,
     icon: "playlist",
+    ...(favorite.art ? { art: favorite.art } : {}),
     service: {
       domain: "media_player",
       service: "play_media",
@@ -243,6 +240,77 @@ export function sonosFavoriteButton(
 
 function isSonosMusicSession(entity: HassEntity | undefined): entity is HassEntity {
   return entity?.state === "playing" || entity?.state === "paused";
+}
+
+function favoriteItems(
+  attrs: Record<string, unknown> | undefined,
+): object | undefined {
+  if (!attrs) {
+    return undefined;
+  }
+
+  return objectValue(attrs.items) ?? objectValue(attrs.favorites);
+}
+
+function favoriteFromRecord(
+  record: Record<string, unknown>,
+  fallbackId?: string,
+): SonosFavorite | null {
+  const id =
+    stringValue(record.id) ??
+    stringValue(record.media_content_id) ??
+    stringValue(record.favorite_id) ??
+    stringValue(record.item_id) ??
+    fallbackId;
+  const title =
+    stringValue(record.title) ??
+    stringValue(record.name) ??
+    stringValue(record.label);
+  const art = favoriteArt(record);
+  return id && title ? { id, title, ...(art ? { art } : {}) } : null;
+}
+
+function favoriteArt(record: Record<string, unknown>): string | undefined {
+  return (
+    artValue(record.art) ??
+    artValue(record.coverArt) ??
+    artValue(record.cover_art) ??
+    artValue(record.cover) ??
+    artValue(record.thumbnail) ??
+    artValue(record.thumbnail_url) ??
+    artValue(record.image) ??
+    artValue(record.image_url) ??
+    artValue(record.entity_picture) ??
+    artValue(record.albumArt) ??
+    artValue(record.album_art) ??
+    artValue(record.picture) ??
+    artValue(record.artwork)
+  );
+}
+
+function artValue(value: unknown): string | undefined {
+  const direct = stringValue(value);
+  if (direct) {
+    return direct;
+  }
+
+  const record = objectValue(value);
+  if (!record) {
+    return undefined;
+  }
+
+  return (
+    stringValue(record.url) ??
+    stringValue(record.uri) ??
+    stringValue(record.src) ??
+    stringValue(record.path)
+  );
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

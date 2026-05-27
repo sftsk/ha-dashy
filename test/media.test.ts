@@ -12,17 +12,6 @@ const config: DashboardConfig["media"] = {
     { label: "Display Player", entity: "media_player.sample_display" },
     { label: "Sample Speaker", entity: "media_player.sample_speaker" },
   ],
-  idlePlaylistButtons: [
-    {
-      label: "Sample Preset",
-      icon: "playlist",
-      service: {
-        domain: "script",
-        service: "turn_on",
-        data: { entity_id: "script.sample_preset" },
-      },
-    },
-  ],
   sonos: {
     playerEntity: "media_player.sample_speaker",
     favoritesSensorEntity: "sensor.sample_favorites",
@@ -68,6 +57,29 @@ describe("MediaActivityTracker", () => {
       "media_player.sample_display": "playing",
       "media_player.sample_speaker": "playing",
     }))?.entity).toBe("media_player.sample_speaker");
+  });
+
+  it("keeps a paused player selected after it was playing", () => {
+    const tracker = new MediaActivityTracker();
+    const playingState = hass({
+      "media_player.sample_display": {
+        state: "playing",
+        attributes: { media_title: "Sample Video" },
+      },
+    });
+    const pausedState = hass({
+      "media_player.sample_display": {
+        state: "paused",
+        attributes: { media_title: "Sample Video" },
+      },
+    });
+
+    tracker.update(config.players, playingState, 1000);
+    tracker.update(config.players, pausedState, 2000);
+
+    expect(tracker.selected(config.players, pausedState)?.entity).toBe(
+      "media_player.sample_display",
+    );
   });
 });
 
@@ -148,7 +160,7 @@ describe("getMediaDisplayMode", () => {
 
     expect(mode).toEqual({
       kind: "idle",
-      buttons: config.idlePlaylistButtons,
+      buttons: [],
     });
   });
 
@@ -214,6 +226,87 @@ describe("Sonos favorites", () => {
     expect(favorites).toEqual([
       { id: "favorite:sample-1", title: "Favorite One" },
       { id: "favorite:sample-2", title: "Favorite Two" },
+    ]);
+  });
+
+  it("parses optional Sonos favorite artwork metadata", () => {
+    const favorites = parseSonosFavorites(
+      hass({
+        "sensor.sample_favorites": {
+          state: "2",
+          attributes: {
+            items: [
+              {
+                id: "favorite:sample-1",
+                title: "Favorite One",
+                thumbnail: "/local/favorite-one.jpg",
+              },
+              {
+                media_content_id: "favorite:sample-2",
+                name: "Favorite Two",
+                entity_picture: "/local/favorite-two.jpg",
+              },
+            ],
+          },
+        },
+      }),
+      "sensor.sample_favorites",
+    );
+
+    expect(favorites).toEqual([
+      {
+        id: "favorite:sample-1",
+        title: "Favorite One",
+        art: "/local/favorite-one.jpg",
+      },
+      {
+        id: "favorite:sample-2",
+        title: "Favorite Two",
+        art: "/local/favorite-two.jpg",
+      },
+    ]);
+  });
+
+  it("parses Sonos favorites and nested artwork from alternate favorites attributes", () => {
+    const favorites = parseSonosFavorites(
+      hass({
+        "sensor.sample_favorites": {
+          state: "3",
+          attributes: {
+            favorites: {
+              "favorite:sample-1": {
+                title: "Favorite One",
+                thumbnail: { url: "/local/favorite-one.jpg" },
+              },
+              "favorite:sample-2": {
+                name: "Favorite Two",
+                image: { uri: "/local/favorite-two.jpg" },
+              },
+              "favorite:sample-3": {
+                label: "Favorite Three",
+              },
+            },
+          },
+        },
+      }),
+      "sensor.sample_favorites",
+    );
+
+    expect(favorites).toEqual([
+      {
+        id: "favorite:sample-1",
+        title: "Favorite One",
+        art: "/local/favorite-one.jpg",
+      },
+      {
+        id: "favorite:sample-2",
+        title: "Favorite Two",
+        art: "/local/favorite-two.jpg",
+      },
+      {
+        id: "favorite:sample-3",
+        title: "Favorite Three",
+      },
     ]);
   });
 

@@ -26,6 +26,7 @@ import type {
 
 const CHART_WIDTH = 620;
 const CHART_HEIGHT = 96;
+const MAX_IDLE_PLAYLIST_CARDS = 5;
 
 type OptimisticMediaStart = {
   title: string;
@@ -242,6 +243,14 @@ export class DashyDashboardPanel extends HTMLElement {
       playpause: mediaService(mode.player.entity, "media_play_pause"),
       next: mediaService(mode.player.entity, "media_next_track"),
       stop: mediaService(mode.player.entity, "media_stop"),
+      shuffle: {
+        domain: "media_player",
+        service: "shuffle_set",
+        data: {
+          entity_id: mode.player.entity,
+          shuffle: hass?.states[mode.player.entity]?.attributes.shuffle !== true,
+        },
+      },
     };
 
     await this.callServiceWithOptimism(
@@ -760,28 +769,29 @@ export class DashyDashboardPanel extends HTMLElement {
       hass,
     );
     if (mode.kind === "idle") {
+      const playlistButtons = mode.buttons.slice(0, MAX_IDLE_PLAYLIST_CARDS);
+      if (playlistButtons.length === 0) {
+        this.setRegion("media", "");
+        return;
+      }
+
       this.setRegion(
         "media",
-        `<article class="card media-card idle-media">
-          <div class="media-heading">
-            <div>
-              <h2>Start Music</h2>
-            </div>
-          </div>
-          <div class="playlist-grid">
-            ${mode.buttons
-              .map(
-                (
-                  button,
-                  index,
-                ) => `<button class="playlist-button" data-dashy-action="playlist" data-index="${index}" type="button">
-                  ${iconSvg(button.icon, "playlist-icon")}
+        `<div class="idle-media playlist-grid" aria-label="Start music">
+            ${playlistButtons
+              .map((button, index) => {
+                const artStyle = button.art
+                  ? ` style="--playlist-art: ${escapeHtml(cssUrl(button.art))}"`
+                  : "";
+                return `<button class="playlist-button" data-dashy-action="playlist" data-index="${index}" type="button" aria-label="Start ${escapeHtml(
+                  button.label,
+                )}"${artStyle}>
+                  <div class="playlist-art">${iconSvg("play", "playlist-play-button")}</div>
                   <span>${escapeHtml(button.label)}</span>
-                </button>`,
-              )
+                </button>`;
+              })
               .join("")}
-          </div>
-        </article>`,
+        </div>`,
       );
       return;
     }
@@ -861,8 +871,9 @@ export class DashyDashboardPanel extends HTMLElement {
         : mediaTitle || playlistName;
     const picture = stringAttr(entity?.attributes.entity_picture);
     const progress = progressPercent(entity?.attributes ?? {});
+    const shuffleEnabled = entity?.attributes.shuffle === true;
     const artStyle = picture
-      ? ` style="--media-art: url(&quot;${escapeHtml(picture)}&quot;)"`
+      ? ` style="--media-art: ${escapeHtml(cssUrl(picture))}"`
       : "";
 
     return `<article class="media-card now-playing sonos-playing ${loading ? "is-loading" : ""}" aria-busy="${loading ? "true" : "false"}"${artStyle}>
@@ -891,6 +902,9 @@ export class DashyDashboardPanel extends HTMLElement {
           <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
             "skip",
           )}</button>
+          <button class="${shuffleEnabled ? "is-active" : ""}" data-dashy-action="media-shuffle" type="button" aria-label="${
+            shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"
+          }">${iconSvg("shuffle")}</button>
         </div>
         <div class="progress"><span style="width: ${progress}%"></span></div>
       </div>
@@ -1067,6 +1081,19 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function cssUrl(value: string): string {
+  return `url("${cssString(value)}")`;
+}
+
+function cssString(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\a ")
+    .replaceAll("\r", "\\d ")
+    .replaceAll("\f", "\\c ");
 }
 
 function stringAttr(value: unknown): string {
@@ -1563,19 +1590,19 @@ const styles = `
 
   .sonos-room .media-source-icon {
     flex: 0 0 auto;
-    color: #d7bf82;
+    color: #fff;
   }
 
   .sonos-room h2 {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #d7bf82;
+    color: #fff;
   }
 
   .sonos-playing .media-title {
     max-width: 72%;
-    color: #e1c98b;
+    color: #fff;
   }
 
   .sonos-playing.is-loading .media-title {
@@ -1583,7 +1610,7 @@ const styles = `
   }
 
   .sonos-playing .media-controls {
-    color: #e1c98b;
+    color: #fff;
   }
 
   .sonos-playing .progress {
@@ -1647,10 +1674,6 @@ const styles = `
     background: rgb(255 255 255 / 10%);
   }
 
-  .idle-media {
-    padding: 12px 16px 14px;
-  }
-
   .media-heading {
     display: block;
   }
@@ -1709,6 +1732,16 @@ const styles = `
     height: 29px;
   }
 
+  .media-controls button.is-active {
+    border-radius: 999px;
+    background: rgb(255 255 255 / 18%);
+  }
+
+  .media-controls button[data-dashy-action="media-stop"] .icon {
+    transform: scale(1.3);
+    transform-origin: center;
+  }
+
   .progress {
     height: 8px;
     border-radius: 999px;
@@ -1727,54 +1760,89 @@ const styles = `
   .playlist-grid {
     margin-top: 10px;
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(clamp(64px, 22%, 220px), 1fr));
     gap: 8px;
+  }
+
+  .idle-media.playlist-grid {
+    margin-top: 0;
   }
 
   .playlist-button {
-    min-height: 78px;
+    position: relative;
+    aspect-ratio: 1 / 1;
+    min-width: 0;
+    min-height: 0;
     border-radius: 14px;
+    overflow: hidden;
     background: #242427;
     border: 1px solid #3a3a3d;
     display: grid;
-    place-items: center;
-    gap: 8px;
-    padding: 10px 8px;
+    grid-template-rows: minmax(0, 1fr) auto;
+    align-items: end;
+    justify-items: stretch;
+    gap: 0;
+    padding: 7px 7px 14px;
+    color: #fff;
   }
 
-  .playlist-icon {
-    width: 28px;
-    height: 28px;
-    color: #37a6ff;
+  .playlist-art {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: #252529;
+    pointer-events: none;
+  }
+
+  .playlist-art::before,
+  .playlist-art::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .playlist-art::before {
+    background-image: var(--playlist-art, linear-gradient(135deg, #303844, #232427));
+    background-position: center;
+    background-size: cover;
+    opacity: 0.9;
+  }
+
+  .playlist-art::after {
+    top: auto;
+    bottom: 0;
+    height: 58%;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.74), rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0));
+  }
+
+  .playlist-play-button {
+    position: relative;
+    z-index: 1;
+    width: clamp(44px, 10vw, 72px);
+    height: clamp(44px, 10vw, 72px);
+    padding: 22%;
+    border-radius: 999px;
+    background: rgb(0 0 0 / 28%);
+    color: #fff;
+    filter: drop-shadow(0 2px 5px rgb(0 0 0 / 55%));
   }
 
   .playlist-button span {
-    font-size: clamp(16px, 2.6vw, 22px);
-    overflow-wrap: anywhere;
-  }
-
-  .idle-media .playlist-button {
-    min-height: 42px;
-    grid-template-columns: 28px minmax(0, 1fr);
-    place-items: initial;
-    align-items: center;
-    justify-items: start;
-    gap: 10px;
-    padding: 7px 10px;
-  }
-
-  .idle-media .playlist-icon {
-    width: 22px;
-    height: 22px;
-  }
-
-  .idle-media .playlist-button span {
+    position: relative;
+    z-index: 1;
     min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     overflow-wrap: normal;
     white-space: nowrap;
-    font-size: clamp(15px, 2.4vw, 20px);
+    padding: 0 2px 1px;
+    font-size: clamp(13px, 2vw, 17px);
+    line-height: 1.05;
+    text-align: center;
+    text-shadow: 0 1px 4px rgb(0 0 0 / 80%);
   }
 
   .toast {
@@ -1833,9 +1901,6 @@ const styles = `
       height: 40px;
     }
 
-    .playlist-grid {
-      grid-template-columns: 1fr;
-    }
   }
 
   @media (max-width: 430px) {
@@ -2058,22 +2123,23 @@ const styles = `
       height: 6px;
     }
 
-    .idle-media {
-      padding: 10px 12px;
-    }
-
     .playlist-grid {
       gap: 6px;
       margin-top: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(clamp(64px, 22%, 220px), 1fr));
+    }
+
+    .idle-media.playlist-grid {
+      margin-top: 0;
     }
 
     .idle-media .playlist-button {
-      min-height: 34px;
-      padding: 5px 8px;
+      aspect-ratio: 1 / 1;
+      padding: 5px 5px 11px;
     }
 
     .idle-media .playlist-button span {
-      font-size: 14px;
+      font-size: 13px;
     }
   }
 `;

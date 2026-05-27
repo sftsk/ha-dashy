@@ -203,37 +203,9 @@
     "sonos": {
       "playerEntity": "media_player.sample_speaker",
       "favoritesSensorEntity": "sensor.sample_favorites",
-      "limit": 3,
-      "ignoredSources": [
-        "TV"
-      ],
-      "ignoredContentIds": [
-        "x-rincon-stream:"
-      ]
-    },
-    "idlePlaylistButtons": [
-      {
-        "label": "Preset One",
-        "icon": "playlist",
-        "service": {
-          "domain": "homeassistant",
-          "service": "toggle",
-          "data": {
-            "entity_id": "switch.sample_preset_one"
-          }
-        }
-      },
-      {
-        "label": "Ambient Mode",
-        "icon": "droplet",
-        "service": {
-          "domain": "homeassistant",
-          "service": "toggle",
-          "data": {
-            "entity_id": "switch.sample_ambient_mode"
-          }
-        }
-      }
-    ]
+      "limit": 5,
+      "ignoredSources": ["TV"],
+      "ignoredContentIds": ["x-rincon-stream:"]
+    }
   }
 }

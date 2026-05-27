@@ -45,6 +45,8 @@ const ICONS: Record<string, string> = {
     '<path d="M12 3v9" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M7 6.8a8 8 0 1 0 10 0" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>',
   previous:
     '<path d="M6 5h2v14H6zM19 5v14L9 12z" fill="currentColor"/>',
+  shuffle:
+    '<path d="M4 7h2.6c2.1 0 3.4 1 4.5 3l1.8 3.2c1 1.8 2.1 2.8 4 2.8H20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M17 13l3 3-3 3M4 17h2.6c1.6 0 2.7-.6 3.6-1.8M13.2 8.8C14.1 7.6 15.2 7 16.9 7H20M17 4l3 3-3 3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
   sink:
     '<path d="M6 11h12v3H6zM7 14h10v5H7z" fill="currentColor"/><path d="M7 10c1-3 4-4 8-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
   skip:
