@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/main";
 import type { HassLike } from "../src/types";
 
@@ -181,6 +181,10 @@ describe("dashy-dashboard-panel", () => {
     document.body.innerHTML = "";
     document.documentElement.style.overflow = "";
     document.body.style.overflow = "";
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("does not render idle playlist buttons without Sonos favorites", () => {
@@ -564,6 +568,10 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toMatch(
       /\.media-controls\.player-controls > button\[data-dashy-action="media-power"\]\s*{[^}]*justify-self:\s*start/s,
     );
+    expect(styles).toMatch(/\.media-heading > div\s*{[^}]*min-width:\s*0/s);
+    expect(styles).toMatch(/\.media-title\s*{[^}]*white-space:\s*nowrap/s);
+    expect(styles).toMatch(/\.media-title\s*{[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.media-title\s*{[^}]*text-overflow:\s*ellipsis/s);
   });
 
   it("renders Display Player when Sonos is only relaying TV audio", () => {
@@ -597,6 +605,45 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.textContent).not.toContain("Sample Speaker");
     expect(element.shadowRoot?.querySelector(".media-more")).toBeNull();
     expect(element.shadowRoot?.querySelector('[data-dashy-action="media-shuffle"]')).toBeNull();
+  });
+
+  it("does not render Display Player controls when Apple TV reports standby", () => {
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavorites(baseHass());
+
+    document.body.append(element);
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "playing",
+          attributes: {
+            media_title: "Sample Video",
+            app_name: "Video App",
+          },
+        },
+      },
+    };
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "paused",
+          attributes: {
+            app_name: "Standby",
+          },
+        },
+      },
+    };
+
+    expect(element.shadowRoot?.querySelector(".player-controls")).toBeNull();
+    expect(element.shadowRoot?.querySelector(".idle-media")).not.toBeNull();
   });
 
   it("renders Sonos playlist player with artwork background and a favorites menu", async () => {
@@ -822,6 +869,84 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.querySelector(".media-title")?.textContent).toContain("Sample Artist - Sample Track");
     expect(mediaCard?.querySelector('[data-dashy-action="media-playpause"]')).not.toBeNull();
     expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
+  });
+
+  it("resumes a paused Sonos track with media_play instead of toggling or starting a favorite", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavorites(baseHass(callService));
+    hass.states["media_player.sample_speaker"] = {
+      entity_id: "media_player.sample_speaker",
+      state: "paused",
+      attributes: {
+        source: "Music Service",
+        media_playlist: "Favorite Two",
+        media_content_id: "favorite:sample-2",
+        media_title: "Current Track",
+        media_artist: "Current Artist",
+        media_position: 42,
+        media_duration: 180,
+        shuffle: true,
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="media-playpause"]')
+      ?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("media_player", "media_play", {
+      entity_id: "media_player.sample_speaker",
+    });
+    expect(callService).not.toHaveBeenCalledWith(
+      "media_player",
+      "media_play_pause",
+      expect.anything(),
+    );
+    expect(callService).not.toHaveBeenCalledWith(
+      "media_player",
+      "play_media",
+      expect.anything(),
+    );
+  });
+
+  it("updates active media progress from media_position_updated_at without a new hass state", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-27T12:00:00.000Z"));
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass();
+    hass.states["media_player.sample_display"] = {
+      entity_id: "media_player.sample_display",
+      state: "playing",
+      attributes: {
+        media_title: "Sample Video",
+        app_name: "Video App",
+        media_position: 10,
+        media_duration: 100,
+        media_position_updated_at: "2026-05-27T12:00:00.000Z",
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    const progressWidth = (): string | undefined =>
+      element.shadowRoot
+        ?.querySelector<HTMLElement>(".progress span")
+        ?.style.getPropertyValue("width");
+
+    expect(progressWidth()).toBe("10%");
+
+    vi.advanceTimersByTime(5_000);
+
+    expect(progressWidth()).toBe("15%");
   });
 
   it("keeps a paused generic media player visible after it was playing", () => {

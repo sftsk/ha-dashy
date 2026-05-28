@@ -269,6 +269,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
           app_name: "Video App",
           media_position: 185,
           media_duration: 250,
+          media_position_updated_at: new Date().toISOString(),
         },
       ),
     };
@@ -285,6 +286,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
         entity_picture: MOCK_ART,
         media_position: 82,
         media_duration: 230,
+        media_position_updated_at: new Date().toISOString(),
         shuffle: false,
       }),
       "media_player.sample_display": entity(
@@ -304,6 +306,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
       entity_picture: MOCK_ART,
       media_position: 82,
       media_duration: 230,
+      media_position_updated_at: new Date().toISOString(),
       shuffle: false,
     }),
     "media_player.sample_display": entity(
@@ -314,6 +317,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
         app_name: "Video App",
         media_position: 185,
         media_duration: 250,
+        media_position_updated_at: new Date().toISOString(),
       },
     ),
   };
@@ -329,6 +333,12 @@ function mediaTransition(
   }
   if (service === "media_play_pause") {
     return { ...entityState, state: entityState.state === "playing" ? "paused" : "playing" };
+  }
+  if (service === "media_play") {
+    return { ...entityState, state: "playing" };
+  }
+  if (service === "media_pause") {
+    return { ...entityState, state: "paused" };
   }
   if (service === "play_media") {
     const extra = data?.extra;

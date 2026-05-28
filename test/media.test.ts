@@ -85,6 +85,55 @@ describe("MediaActivityTracker", () => {
 });
 
 describe("getMediaDisplayMode", () => {
+  it("does not keep a paused standby display selected after it was active", () => {
+    const tracker = new MediaActivityTracker();
+    const previousState = hass({
+      "media_player.sample_display": {
+        state: "playing",
+        attributes: {
+          media_title: "Sample Video",
+          app_name: "Video App",
+        },
+      },
+      "media_player.sample_speaker": "idle",
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+    const standbyState = hass({
+      "media_player.sample_display": {
+        state: "paused",
+        attributes: {
+          app_name: "Standby",
+        },
+      },
+      "media_player.sample_speaker": "idle",
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+
+    tracker.update(config.players, previousState, Date.now() - 1_000);
+    tracker.update(config.players, standbyState, Date.now());
+
+    const mode = getMediaDisplayMode(config, tracker, standbyState);
+
+    expect(mode.kind).toBe("idle");
+    expect(mode.kind === "idle" ? mode.buttons.map((button) => button.label) : []).toEqual([
+      "Favorite One",
+    ]);
+  });
+
   it("selects Display Player when Sonos is only relaying TV audio", () => {
     const tracker = new MediaActivityTracker();
     const state = hass({
@@ -97,7 +146,7 @@ describe("getMediaDisplayMode", () => {
         },
       },
     });
-    tracker.update(config.players, state, 1000);
+    tracker.update(config.players, state, Date.now());
 
     expect(getMediaDisplayMode(config, tracker, state)).toEqual({
       kind: "player",
@@ -117,7 +166,7 @@ describe("getMediaDisplayMode", () => {
         },
       },
     });
-    tracker.update(config.players, state, 1000);
+    tracker.update(config.players, state, Date.now());
 
     expect(getMediaDisplayMode(config, tracker, state)).toEqual({
       kind: "player",
@@ -162,6 +211,78 @@ describe("getMediaDisplayMode", () => {
     expect(mode).toEqual({
       kind: "idle",
       buttons: [],
+    });
+  });
+
+  it("falls back to idle favorites when Sonos music state is older than an hour", () => {
+    const tracker = new MediaActivityTracker();
+    const previousState = hass({
+      "media_player.sample_display": "idle",
+      "media_player.sample_speaker": {
+        state: "playing",
+        attributes: {
+          source: "Music Service",
+          media_content_id: "favorite:sample-1",
+        },
+      },
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+    const staleState = hass({
+      "media_player.sample_display": "idle",
+      "media_player.sample_speaker": {
+        state: "playing",
+        attributes: {
+          source: "Music Service",
+          media_content_id: "favorite:sample-1",
+        },
+      },
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+
+    tracker.update(config.players, previousState, Date.now() - 3_600_001);
+    tracker.update(config.players, staleState, Date.now());
+
+    const mode = getMediaDisplayMode(config, tracker, staleState);
+
+    expect(mode.kind).toBe("idle");
+    expect(mode.kind === "idle" ? mode.buttons.map((button) => button.label) : []).toEqual([
+      "Favorite One",
+    ]);
+  });
+
+  it("keeps recently active Sonos music visible within the freshness window", () => {
+    const tracker = new MediaActivityTracker();
+    const state = hass({
+      "media_player.sample_display": "idle",
+      "media_player.sample_speaker": {
+        state: "playing",
+        attributes: {
+          source: "Music Service",
+          media_content_id: "favorite:sample-1",
+        },
+      },
+    });
+
+    tracker.update(config.players, state, Date.now() - 3_599_999);
+    tracker.update(config.players, state, Date.now());
+
+    expect(getMediaDisplayMode(config, tracker, state)).toEqual({
+      kind: "player",
+      player: { label: "Sample Speaker", entity: "media_player.sample_speaker" },
     });
   });
 

@@ -17,11 +17,24 @@ type MediaDisplayMode =
       buttons: PlaylistButtonConfig[];
     };
 
+const SONOS_ACTIVE_WINDOW_MS = 60 * 60 * 1000;
+const INACTIVE_MEDIA_STATES = new Set([
+  "idle",
+  "off",
+  "standby",
+  "unknown",
+  "unavailable",
+]);
+
 export class MediaActivityTracker {
   private readonly lastActive = new Map<string, number>();
   private readonly wasPlaying = new Map<string, boolean>();
 
-  update(players: MediaPlayerConfig[], hass: HassLike | undefined, now = Date.now()): void {
+  update(
+    players: MediaPlayerConfig[],
+    hass: HassLike | undefined,
+    now = Date.now(),
+  ): void {
     for (const player of players) {
       const isPlaying = hass?.states[player.entity]?.state === "playing";
       const previouslyPlaying = this.wasPlaying.get(player.entity) === true;
@@ -38,12 +51,19 @@ export class MediaActivityTracker {
     }
   }
 
-  selected(players: MediaPlayerConfig[], hass: HassLike | undefined): MediaPlayerConfig | null {
+  lastActiveAt(entityId: string): number | undefined {
+    return this.lastActive.get(entityId);
+  }
+
+  selected(
+    players: MediaPlayerConfig[],
+    hass: HassLike | undefined,
+  ): MediaPlayerConfig | null {
     const active = players.filter((player) => {
-      const state = hass?.states[player.entity]?.state;
-      return (
-        state === "playing" ||
-        (state === "paused" && this.lastActive.has(player.entity))
+      const entity = hass?.states[player.entity];
+      return isSelectableMediaSession(
+        entity,
+        this.lastActive.has(player.entity),
       );
     });
     if (active.length === 0) {
@@ -89,6 +109,7 @@ export function getMediaDisplayMode(
   tracker: MediaActivityTracker,
   hass: HassLike | undefined,
 ): MediaDisplayMode {
+  const now = Date.now();
   const sonosPlayer = mediaConfig.sonos
     ? mediaConfig.players.find(
         (player) => player.entity === mediaConfig.sonos?.playerEntity,
@@ -101,6 +122,11 @@ export function getMediaDisplayMode(
   if (
     sonosPlayer &&
     isSonosMusicSession(sonosEntity) &&
+    isRecentSonosSession(
+      sonosEntity,
+      tracker.lastActiveAt(sonosPlayer.entity),
+      now,
+    ) &&
     !isIgnoredSonosPlayback(sonosEntity, mediaConfig.sonos)
   ) {
     return { kind: "player", player: sonosPlayer };
@@ -112,7 +138,15 @@ export function getMediaDisplayMode(
     }
 
     const entity = hass?.states[player.entity];
-    return entity ? !isIgnoredSonosPlayback(entity, mediaConfig.sonos) : true;
+    return entity
+      ? isSonosMusicSession(entity) &&
+          isRecentSonosSession(
+            entity,
+            tracker.lastActiveAt(player.entity),
+            now,
+          ) &&
+          !isIgnoredSonosPlayback(entity, mediaConfig.sonos)
+      : true;
   });
   const player = tracker.selected(selectablePlayers, hass);
   if (player) {
@@ -398,7 +432,79 @@ function mediaContentType(item: MediaBrowserItem): string | undefined {
 }
 
 function isSonosMusicSession(entity: HassEntity | undefined): entity is HassEntity {
-  return entity?.state === "playing" || entity?.state === "paused";
+  return Boolean(
+    entity &&
+      !isStandbyMediaSession(entity) &&
+      (entity.state === "playing" || entity.state === "paused"),
+  );
+}
+
+function isSelectableMediaSession(
+  entity: HassEntity | undefined,
+  hasPriorActivity: boolean,
+): boolean {
+  if (!entity || isStandbyMediaSession(entity)) {
+    return false;
+  }
+
+  return (
+    entity.state === "playing" ||
+    (entity.state === "paused" && hasPriorActivity)
+  );
+}
+
+function isRecentSonosSession(
+  entity: HassEntity,
+  trackedLastActive: number | undefined,
+  now: number,
+): boolean {
+  const entityLastActive = latestEntityActivityTime(entity);
+  const lastActive =
+    trackedLastActive === undefined
+      ? entityLastActive
+      : Math.max(trackedLastActive, entityLastActive ?? trackedLastActive);
+
+  return lastActive === undefined || now - lastActive <= SONOS_ACTIVE_WINDOW_MS;
+}
+
+function latestEntityActivityTime(entity: HassEntity): number | undefined {
+  const timestamps = [
+    entity.attributes.media_position_updated_at,
+    entity.last_updated,
+    entity.last_changed,
+  ]
+    .map((value) => timestampValue(value))
+    .filter((value): value is number => value !== undefined);
+
+  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
+}
+
+function timestampValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function isStandbyMediaSession(entity: HassEntity): boolean {
+  if (INACTIVE_MEDIA_STATES.has(entity.state.toLocaleLowerCase())) {
+    return true;
+  }
+
+  return (
+    isStandbyLabel(entity.attributes.app_name) ||
+    isStandbyLabel(entity.attributes.source)
+  );
+}
+
+function isStandbyLabel(value: unknown): boolean {
+  return stringValue(value)?.trim().toLocaleLowerCase() === "standby";
 }
 
 function favoriteItems(

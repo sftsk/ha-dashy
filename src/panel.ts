@@ -50,6 +50,7 @@ export class DashyDashboardPanel extends HTMLElement {
   private config: DashboardConfig = panelConfigToDashboardConfig(undefined);
   private sampler = new ChartSampler(this.config.environment.maxSamples);
   private clockTimer: number | undefined;
+  private mediaProgressTimer: number | undefined;
   private toastTimer: number | undefined;
   private optimisticVersion = 0;
   private isFavoritesMenuOpen = false;
@@ -76,6 +77,10 @@ export class DashyDashboardPanel extends HTMLElement {
     this.view.addEventListener("click", this.handleClick);
     this.updateClock();
     this.clockTimer = window.setInterval(() => this.updateClock(), 15_000);
+    this.mediaProgressTimer = window.setInterval(
+      () => this.updateMediaProgress(),
+      1_000,
+    );
     this.updateAll();
     void this.refreshSonosArtwork();
   }
@@ -84,6 +89,9 @@ export class DashyDashboardPanel extends HTMLElement {
     this.view.removeEventListener("click", this.handleClick);
     if (this.clockTimer !== undefined) {
       window.clearInterval(this.clockTimer);
+    }
+    if (this.mediaProgressTimer !== undefined) {
+      window.clearInterval(this.mediaProgressTimer);
     }
     if (this.toastTimer !== undefined) {
       window.clearTimeout(this.toastTimer);
@@ -249,7 +257,12 @@ export class DashyDashboardPanel extends HTMLElement {
     const serviceByAction: Record<string, ServiceCall> = {
       power: mediaService(mode.player.entity, "turn_off"),
       previous: mediaService(mode.player.entity, "media_previous_track"),
-      playpause: mediaService(mode.player.entity, "media_play_pause"),
+      playpause: mediaService(
+        mode.player.entity,
+        hass?.states[mode.player.entity]?.state === "playing"
+          ? "media_pause"
+          : "media_play",
+      ),
       next: mediaService(mode.player.entity, "media_next_track"),
       stop: mediaService(mode.player.entity, "media_stop"),
       shuffle: {
@@ -360,6 +373,14 @@ export class DashyDashboardPanel extends HTMLElement {
 
     if (serviceCall.service === "media_play_pause") {
       return currentState === "playing" ? "paused" : "playing";
+    }
+
+    if (serviceCall.service === "media_play") {
+      return "playing";
+    }
+
+    if (serviceCall.service === "media_pause") {
+      return "paused";
     }
 
     if (serviceCall.service === "play_media") {
@@ -892,7 +913,7 @@ export class DashyDashboardPanel extends HTMLElement {
       ]
         .filter(Boolean)
         .join(" · ") || titleCase(entity?.state ?? "playing");
-    const progress = progressPercent(attrs);
+    const progress = progressPercent(entity);
 
     this.setRegion(
       "media",
@@ -949,7 +970,7 @@ export class DashyDashboardPanel extends HTMLElement {
         ? `${artist} - ${mediaTitle}`
         : mediaTitle || playlistName;
     const picture = stringAttr(entity?.attributes.entity_picture);
-    const progress = progressPercent(entity?.attributes ?? {});
+    const progress = progressPercent(entity);
     const shuffleEnabled = entity?.attributes.shuffle === true;
     const artStyle = picture
       ? ` style="--media-art: ${escapeHtml(cssUrl(picture))}"`
@@ -1006,6 +1027,29 @@ export class DashyDashboardPanel extends HTMLElement {
           : ""
       }
     </article>`;
+  }
+
+  private updateMediaProgress(): void {
+    const hass = this.effectiveHass();
+    const mode = getMediaDisplayMode(
+      this.config.media,
+      this.mediaTracker,
+      hass,
+    );
+    if (mode.kind !== "player") {
+      return;
+    }
+
+    const progress = this.view.querySelector<HTMLElement>(
+      '[data-region="media"] .progress span',
+    );
+    if (!progress) {
+      return;
+    }
+
+    progress.style.width = `${progressPercent(
+      hass?.states[mode.player.entity],
+    )}%`;
   }
 
   private sampleEnvironment(): void {
@@ -1182,9 +1226,13 @@ function stringAttr(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function progressPercent(attrs: Record<string, unknown>): number {
+function progressPercent(
+  entity: HassEntity | undefined,
+  now = Date.now(),
+): number {
+  const attrs = entity?.attributes ?? {};
   const duration = Number(attrs.media_duration);
-  const position = Number(attrs.media_position);
+  const position = projectedMediaPosition(entity, now);
   if (
     !Number.isFinite(duration) ||
     !Number.isFinite(position) ||
@@ -1194,6 +1242,40 @@ function progressPercent(attrs: Record<string, unknown>): number {
   }
 
   return Math.max(0, Math.min(100, Math.round((position / duration) * 100)));
+}
+
+function projectedMediaPosition(
+  entity: HassEntity | undefined,
+  now: number,
+): number {
+  const attrs = entity?.attributes ?? {};
+  const position = Number(attrs.media_position);
+  if (!Number.isFinite(position)) {
+    return Number.NaN;
+  }
+
+  if (entity?.state !== "playing") {
+    return position;
+  }
+
+  const updatedAt =
+    timestampMs(attrs.media_position_updated_at) ??
+    timestampMs(entity.last_updated) ??
+    timestampMs(entity.last_changed);
+  if (updatedAt === undefined) {
+    return position;
+  }
+
+  return position + Math.max(0, (now - updatedAt) / 1_000);
+}
+
+function timestampMs(value: unknown): number | undefined {
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 const styles = `
@@ -1683,7 +1765,7 @@ const styles = `
   }
 
   .sonos-playing .media-title {
-    max-width: 72%;
+    max-width: 100%;
     color: #fff;
   }
 
@@ -1760,6 +1842,10 @@ const styles = `
     display: block;
   }
 
+  .media-heading > div {
+    min-width: 0;
+  }
+
   .media-source-icon {
     width: 30px;
     height: 30px;
@@ -1771,6 +1857,11 @@ const styles = `
   }
 
   .media-title {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: clamp(21px, 3.5vw, 30px);
     line-height: 1.12;
   }
