@@ -1325,6 +1325,8 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toContain(
       '.climate-actions button.is-active[data-dashy-action="climate-off"]',
     );
+    expect(styles).toContain(".control-actions.climate-actions");
+    expect(styles).toMatch(/\.climate-actions\s*{[^}]*gap:\s*0;/s);
     expect(styles).toContain("gap: 10px");
     expect(styles).not.toMatch(/\.control-actions\s*{[^}]*grid-column:\s*1 \/ -1/s);
     expect(styles).not.toContain("flex-wrap: wrap");

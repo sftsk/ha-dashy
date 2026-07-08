@@ -1730,10 +1730,15 @@ const styles = `
     width: min(240px, 58vw);
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
     overflow: hidden;
     border: 1px solid #4b4b50;
     border-radius: 999px;
     background: #252529;
+  }
+
+  .control-actions.climate-actions {
+    gap: 0;
   }
 
   .climate-actions button {
