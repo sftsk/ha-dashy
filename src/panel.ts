@@ -830,7 +830,7 @@ export class DashyDashboardPanel extends HTMLElement {
     return `<div class="control-row climate-row">
       <div class="control-icon">${iconSvg("thermometer", "control-symbol")}</div>
       <div class="control-copy">
-        <div>AC</div>
+        <div>${escapeHtml(climate.label)}</div>
       </div>
       <div class="control-actions climate-actions" role="group" aria-label="${escapeHtml(climate.label)} mode">
         <button class="${isCool ? "is-active" : ""}" data-dashy-action="climate-cool" type="button" aria-pressed="${isCool}">Cool</button>

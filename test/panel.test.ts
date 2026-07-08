@@ -1173,9 +1173,11 @@ describe("dashy-dashboard-panel", () => {
     const callService = vi.fn().mockResolvedValue(undefined);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
+      panel: { config: unknown };
     };
 
     document.body.append(element);
+    element.panel = { config: { climate: { label: "Coolio" } } };
     element.hass = baseHass(callService);
 
     const controls = element.shadowRoot?.querySelector('[data-region="controls"]');
@@ -1193,12 +1195,12 @@ describe("dashy-dashboard-panel", () => {
     expect(climateRow?.closest(".controls-card")).toBe(controlsCard);
     expect(climateRow?.closest('[data-region="controls"]')).toBe(controls);
     expect(climateRow?.textContent?.replace(/\s+/g, " ").trim()).toBe(
-      "AC Cool Clean Off",
+      "Coolio Cool Clean Off",
     );
     expect(element.shadowRoot?.querySelector(".climate-card")).toBeNull();
     expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
     expect(climateActions?.getAttribute("role")).toBe("group");
-    expect(climateActions?.getAttribute("aria-label")).toBe("Sample Heat Pump mode");
+    expect(climateActions?.getAttribute("aria-label")).toBe("Coolio mode");
     expect(climateButtons.map((button) => button.textContent?.trim())).toEqual([
       "Cool",
       "Clean",
