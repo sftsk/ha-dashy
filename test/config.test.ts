@@ -37,6 +37,33 @@ describe("normalizeDashboardConfig", () => {
       "switch.sample_outlet",
       "cover.sample_shade",
     ]);
+    expect(defaultDashboardConfig.climate).toEqual({
+      label: "Sample Heat Pump",
+      entity: "climate.sample_heat_pump",
+      actions: {
+        cool: {
+          domain: "script",
+          service: "turn_on",
+          data: {
+            entity_id: "script.sample_cool_23",
+          },
+        },
+        cleanAir: {
+          domain: "script",
+          service: "turn_on",
+          data: {
+            entity_id: "script.sample_dry_then_fan_30m",
+          },
+        },
+        off: {
+          domain: "climate",
+          service: "turn_off",
+          data: {
+            entity_id: "climate.sample_heat_pump",
+          },
+        },
+      },
+    });
     expect(defaultDashboardConfig.media.players).toEqual([
       { label: "Display Player", entity: "media_player.sample_display" },
       { label: "Sample Speaker", entity: "media_player.sample_speaker" },
@@ -174,6 +201,7 @@ describe("normalizeDashboardConfig", () => {
     expect(bundledConfig.sceneTiles).toEqual([]);
     expect(bundledConfig.controls).toEqual([]);
     expect(bundledConfig.badges).toEqual([]);
+    expect(bundledConfig.climate).toBeUndefined();
     expect(bundledConfig.media.players).toEqual([]);
     expect("idlePlaylistButtons" in bundledConfig.media).toBe(false);
     expect(panelConfigToDashboardConfig(undefined, bundledConfig).weather.entity).toBe(

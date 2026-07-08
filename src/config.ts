@@ -35,6 +35,8 @@ export function normalizeDashboardConfig(
   const override = isRecord(input) ? input : {};
   const media = isRecord(override.media) ? override.media : {};
   const environment = isRecord(override.environment) ? override.environment : {};
+  const climate = isRecord(override.climate) ? override.climate : undefined;
+  const climateActions = isRecord(climate?.actions) ? climate.actions : {};
 
   return {
     weather: {
@@ -54,6 +56,16 @@ export function normalizeDashboardConfig(
     badges: Array.isArray(override.badges)
       ? override.badges
       : fallbackConfig.badges,
+    climate: climate
+      ? {
+          ...fallbackConfig.climate,
+          ...climate,
+          actions: {
+            ...fallbackConfig.climate?.actions,
+            ...climateActions,
+          },
+        }
+      : fallbackConfig.climate,
     media: {
       players: Array.isArray(media.players)
         ? media.players

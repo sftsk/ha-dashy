@@ -45,6 +45,15 @@ function baseHass(callService = vi.fn()): HassLike {
         state: "open",
         attributes: {},
       },
+      "climate.sample_heat_pump": {
+        entity_id: "climate.sample_heat_pump",
+        state: "off",
+        attributes: {
+          current_temperature: 24.8,
+          temperature: 23,
+          fan_mode: "auto",
+        },
+      },
     },
     callService,
   };
@@ -1155,10 +1164,153 @@ describe("dashy-dashboard-panel", () => {
     expect(element.shadowRoot?.querySelector(".control-copy span")).toBeNull();
     expect(controlText).toContain("Outlet");
     expect(controlText).toContain("Shade");
-    expect(controlText).not.toContain("Off");
     expect(controlText).not.toContain("Open");
     expect(styles).toContain("color: #f0f0f2");
     expect(styles).not.toContain("#4b83b7");
+  });
+
+  it("renders climate as an AC three-way toggle in device controls and calls each service", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+
+    document.body.append(element);
+    element.hass = baseHass(callService);
+
+    const controls = element.shadowRoot?.querySelector('[data-region="controls"]');
+    const controlsCard = element.shadowRoot?.querySelector(".controls-card");
+    const media = element.shadowRoot?.querySelector('[data-region="media"]');
+    const climateRow = element.shadowRoot?.querySelector(".climate-row");
+    const climateActions = element.shadowRoot?.querySelector(".climate-actions");
+    const climateButtons = Array.from(
+      element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+        ".climate-actions button",
+      ) ?? [],
+    );
+    const [coolButton, cleanAirButton, offButton] = climateButtons;
+
+    expect(climateRow?.closest(".controls-card")).toBe(controlsCard);
+    expect(climateRow?.closest('[data-region="controls"]')).toBe(controls);
+    expect(climateRow?.textContent?.replace(/\s+/g, " ").trim()).toBe(
+      "AC Cool Clean Off",
+    );
+    expect(element.shadowRoot?.querySelector(".climate-card")).toBeNull();
+    expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
+    expect(climateActions?.getAttribute("role")).toBe("group");
+    expect(climateActions?.getAttribute("aria-label")).toBe("Sample Heat Pump mode");
+    expect(climateButtons.map((button) => button.textContent?.trim())).toEqual([
+      "Cool",
+      "Clean",
+      "Off",
+    ]);
+    expect(climateButtons.map((button) => button.getAttribute("aria-pressed"))).toEqual([
+      "false",
+      "false",
+      "true",
+    ]);
+    expect(controls?.compareDocumentPosition(media as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    coolButton?.click();
+    await Promise.resolve();
+    cleanAirButton?.click();
+    await Promise.resolve();
+    offButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("script", "turn_on", {
+      entity_id: "script.sample_cool_23",
+    });
+    expect(callService).toHaveBeenCalledWith("script", "turn_on", {
+      entity_id: "script.sample_dry_then_fan_30m",
+    });
+    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
+      entity_id: "climate.sample_heat_pump",
+    });
+  });
+
+  it("marks the active climate toggle segment", () => {
+    const cases: Array<[string, string[]]> = [
+      ["cool", ["true", "false", "false"]],
+      ["dry", ["false", "true", "false"]],
+      ["fan_only", ["false", "true", "false"]],
+      ["off", ["false", "false", "true"]],
+      ["unknown", ["false", "false", "false"]],
+    ];
+
+    for (const [state, pressedStates] of cases) {
+      document.body.innerHTML = "";
+      const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+        hass: HassLike;
+      };
+      const hass = baseHass();
+      hass.states["climate.sample_heat_pump"] = {
+        ...hass.states["climate.sample_heat_pump"],
+        state,
+      };
+
+      document.body.append(element);
+      element.hass = hass;
+
+      const climateButtons = Array.from(
+        element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+          ".climate-actions button",
+        ) ?? [],
+      );
+
+      expect(climateButtons.map((button) => button.getAttribute("aria-pressed"))).toEqual(
+        pressedStates,
+      );
+      expect(climateButtons.map((button) => button.classList.contains("is-active"))).toEqual(
+        pressedStates.map((pressed) => pressed === "true"),
+      );
+    }
+  });
+
+  it("turns the heat pump off from the active clean segment", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass(callService);
+    hass.states["climate.sample_heat_pump"] = {
+      ...hass.states["climate.sample_heat_pump"],
+      state: "fan_only",
+      attributes: {
+        current_temperature: 24.8,
+        temperature: 23,
+        fan_mode: "powerful",
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    const climateRow = element.shadowRoot?.querySelector(".climate-row");
+    const offButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-off"]',
+    );
+
+    const cleanAirButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-cleanAir"]',
+    );
+
+    expect(climateRow?.textContent).toContain("AC");
+    expect(climateRow?.textContent).not.toContain("Fan Only");
+    expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
+    expect(cleanAirButton?.classList.contains("is-active")).toBe(true);
+    expect(offButton).not.toBeNull();
+    expect(offButton?.textContent?.trim()).toBe("Off");
+    expect(offButton?.getAttribute("aria-pressed")).toBe("false");
+
+    offButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
+      entity_id: "climate.sample_heat_pump",
+    });
   });
 
   it("keeps device action buttons in-row on small screens", () => {
@@ -1169,8 +1321,13 @@ describe("dashy-dashboard-panel", () => {
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(styles).toContain("grid-template-columns: 34px minmax(0, 1fr) auto");
+    expect(styles).toContain("grid-template-columns: repeat(3, minmax(0, 1fr))");
+    expect(styles).toContain(
+      '.climate-actions button.is-active[data-dashy-action="climate-off"]',
+    );
     expect(styles).toContain("gap: 10px");
     expect(styles).not.toMatch(/\.control-actions\s*{[^}]*grid-column:\s*1 \/ -1/s);
+    expect(styles).not.toContain("flex-wrap: wrap");
   });
 
   it("optimistically marks a scene tile active before Home Assistant resolves", () => {

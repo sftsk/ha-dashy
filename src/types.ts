@@ -52,6 +52,18 @@ export type ControlConfig = {
   actions: ControlActions;
 };
 
+export type ClimateActions = {
+  cool?: ServiceCall;
+  cleanAir?: ServiceCall;
+  off?: ServiceCall;
+};
+
+export type ClimateConfig = {
+  label: string;
+  entity: EntityId;
+  actions: ClimateActions;
+};
+
 export type MediaPlayerConfig = {
   label: string;
   entity: EntityId;
@@ -107,6 +119,7 @@ export type DashboardConfig = {
   sceneTiles: SceneTileConfig[];
   controls: ControlConfig[];
   badges: DashboardBadgeConfig[];
+  climate?: ClimateConfig;
   media: {
     players: MediaPlayerConfig[];
     sonos?: SonosConfig;

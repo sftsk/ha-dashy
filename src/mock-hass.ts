@@ -55,6 +55,11 @@ export function attachMockHomeAssistant(element: DashyElement): void {
     "light.sample_scene_10": entity("light.sample_scene_10", "on"),
     "switch.sample_outlet": entity("switch.sample_outlet", "off"),
     "cover.sample_shade": entity("cover.sample_shade", "open"),
+    "climate.sample_heat_pump": entity("climate.sample_heat_pump", "off", {
+      current_temperature: 24.8,
+      temperature: 23,
+      fan_mode: "auto",
+    }),
     "switch.sample_preset_one": entity("switch.sample_preset_one", "off"),
     "switch.sample_ambient_mode": entity("switch.sample_ambient_mode", "off"),
     "sensor.sample_favorites": entity("sensor.sample_favorites", "6", {
@@ -81,6 +86,31 @@ export function attachMockHomeAssistant(element: DashyElement): void {
       }
       if (domain === "media_player" && entityId && states[entityId]) {
         states[entityId] = mediaTransition(states[entityId], service, data);
+      }
+      if (domain === "climate" && entityId && states[entityId]) {
+        states[entityId] = climateTransition(states[entityId], service, data);
+      }
+      if (domain === "script" && entityId === "script.sample_dry_then_fan_30m") {
+        states["climate.sample_heat_pump"] = {
+          ...states["climate.sample_heat_pump"],
+          state: "dry",
+          attributes: {
+            ...states["climate.sample_heat_pump"].attributes,
+            fan_mode: "powerful",
+          },
+        };
+      }
+      if (domain === "script" && entityId === "script.sample_cool_23") {
+        states["climate.sample_heat_pump"] = {
+          ...states["climate.sample_heat_pump"],
+          state: "cool",
+          attributes: {
+            ...states["climate.sample_heat_pump"].attributes,
+            temperature: 23,
+            swing_mode: "windnice",
+            swing_horizontal_mode: "stop",
+          },
+        };
       }
       element.hass = { ...hass, states: { ...states } };
     },
@@ -367,5 +397,41 @@ function mediaTransition(
       },
     };
   }
+  return entityState;
+}
+
+function climateTransition(
+  entityState: HassEntity,
+  service: string,
+  data?: Record<string, unknown>,
+): HassEntity {
+  if (service === "turn_off") {
+    return { ...entityState, state: "off" };
+  }
+
+  if (
+    (service === "set_temperature" || service === "set_hvac_mode") &&
+    typeof data?.hvac_mode === "string"
+  ) {
+    return {
+      ...entityState,
+      state: data.hvac_mode,
+      attributes: {
+        ...entityState.attributes,
+        temperature: data.temperature ?? entityState.attributes.temperature,
+      },
+    };
+  }
+
+  if (service === "set_fan_mode" && typeof data?.fan_mode === "string") {
+    return {
+      ...entityState,
+      attributes: {
+        ...entityState.attributes,
+        fan_mode: data.fan_mode,
+      },
+    };
+  }
+
   return entityState;
 }

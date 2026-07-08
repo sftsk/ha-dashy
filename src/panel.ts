@@ -16,6 +16,7 @@ import {
   serviceForToggleEntity,
 } from "./services";
 import type {
+  ClimateConfig,
   ControlConfig,
   DashboardBadgeConfig,
   DashboardConfig,
@@ -185,6 +186,11 @@ export class DashyDashboardPanel extends HTMLElement {
       return;
     }
 
+    if (action?.startsWith("climate-")) {
+      await this.callClimate(action.replace("climate-", ""));
+      return;
+    }
+
     if (action === "media-favorites-menu") {
       this.isFavoritesMenuOpen = !this.isFavoritesMenuOpen;
       this.updateMedia();
@@ -241,6 +247,19 @@ export class DashyDashboardPanel extends HTMLElement {
         ? serviceForToggleEntity(control.entity)
         : undefined);
     await this.callServiceWithOptimism(serviceCall, control.entity);
+  }
+
+  private async callClimate(action: string): Promise<void> {
+    const climate = this.config.climate;
+    if (!climate) {
+      return;
+    }
+
+    const serviceCall = climate.actions[action as keyof ClimateConfig["actions"]];
+    await this.callServiceWithOptimism(
+      serviceCall,
+      serviceCall?.domain === "climate" ? climate.entity : undefined,
+    );
   }
 
   private async callMedia(action: string): Promise<void> {
@@ -357,6 +376,15 @@ export class DashyDashboardPanel extends HTMLElement {
 
     if (serviceCall.service === "turn_off") {
       return "off";
+    }
+
+    if (
+      serviceCall.domain === "climate" &&
+      (serviceCall.service === "set_temperature" ||
+        serviceCall.service === "set_hvac_mode") &&
+      typeof serviceCall.data?.hvac_mode === "string"
+    ) {
+      return serviceCall.data.hvac_mode;
     }
 
     if (serviceCall.service === "media_stop") {
@@ -761,6 +789,7 @@ export class DashyDashboardPanel extends HTMLElement {
       "controls",
       `<article class="card controls-card">
         ${this.config.controls.map((control, index) => this.renderControl(control, index)).join("")}
+        ${this.config.climate ? this.renderClimateControl(this.config.climate) : ""}
       </article>`,
     );
   }
@@ -787,6 +816,26 @@ export class DashyDashboardPanel extends HTMLElement {
                 control.label,
               )}"><span></span></button>`
         }
+      </div>
+    </div>`;
+  }
+
+  private renderClimateControl(climate: ClimateConfig): string {
+    const entity = this.entity(climate.entity);
+    const state = entity?.state ?? "unavailable";
+    const isCool = state === "cool";
+    const isClean = state === "dry" || state === "fan_only";
+    const isOff = state === "off";
+
+    return `<div class="control-row climate-row">
+      <div class="control-icon">${iconSvg("thermometer", "control-symbol")}</div>
+      <div class="control-copy">
+        <div>AC</div>
+      </div>
+      <div class="control-actions climate-actions" role="group" aria-label="${escapeHtml(climate.label)} mode">
+        <button class="${isCool ? "is-active" : ""}" data-dashy-action="climate-cool" type="button" aria-pressed="${isCool}">Cool</button>
+        <button class="${isClean ? "is-active" : ""}" data-dashy-action="climate-cleanAir" type="button" aria-pressed="${isClean}">Clean</button>
+        <button class="${isOff ? "is-active" : ""}" data-dashy-action="climate-off" type="button" aria-pressed="${isOff}">Off</button>
       </div>
     </div>`;
   }
@@ -1677,6 +1726,44 @@ const styles = `
     background: #fff;
   }
 
+  .climate-actions {
+    width: min(240px, 58vw);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: hidden;
+    border: 1px solid #4b4b50;
+    border-radius: 999px;
+    background: #252529;
+  }
+
+  .climate-actions button {
+    min-width: 0;
+    min-height: 38px;
+    padding: 0 12px;
+    border-radius: 0;
+    background: transparent;
+    color: #f0f0f2;
+    font-size: clamp(14px, 2.1vw, 17px);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .climate-actions button + button {
+    border-left: 1px solid #4b4b50;
+  }
+
+  .climate-actions button.is-active {
+    background: #375eea;
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+  }
+
+  .climate-actions button.is-active[data-dashy-action="climate-off"] {
+    background: #e5e5e7;
+    color: #1b1b1c;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
+  }
+
   .media-card {
     min-height: 0;
     overflow: hidden;
@@ -2100,6 +2187,9 @@ const styles = `
       height: 40px;
     }
 
+    .climate-actions {
+      width: min(230px, 58vw);
+    }
   }
 
   @media (max-width: 430px) {
@@ -2285,6 +2375,19 @@ const styles = `
     .cover-pill .icon {
       width: 24px;
       height: 24px;
+    }
+
+    .climate-actions button {
+      font-size: 13px;
+    }
+
+    .climate-actions {
+      width: min(204px, 58vw);
+    }
+
+    .climate-actions button {
+      min-height: 32px;
+      padding: 0 6px;
     }
 
     .now-playing {
