@@ -38,7 +38,7 @@ describe("normalizeDashboardConfig", () => {
       "cover.sample_shade",
     ]);
     expect(defaultDashboardConfig.climate).toEqual({
-      label: "Sample Heat Pump",
+      label: "AC",
       entity: "climate.sample_heat_pump",
       actions: {
         cool: {

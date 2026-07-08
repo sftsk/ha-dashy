@@ -1169,7 +1169,7 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).not.toContain("#4b83b7");
   });
 
-  it("renders climate as an AC three-way toggle in device controls and calls each service", async () => {
+  it("renders climate as a configured-label three-way toggle in device controls and calls each service", async () => {
     const callService = vi.fn().mockResolvedValue(undefined);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;

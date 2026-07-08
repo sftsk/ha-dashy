@@ -190,7 +190,7 @@
     }
   ],
   "climate": {
-    "label": "Sample Heat Pump",
+    "label": "AC",
     "entity": "climate.sample_heat_pump",
     "actions": {
       "cool": {
