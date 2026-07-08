@@ -37,6 +37,33 @@ describe("normalizeDashboardConfig", () => {
       "switch.sample_outlet",
       "cover.sample_shade",
     ]);
+    expect(defaultDashboardConfig.climate).toEqual({
+      label: "AC",
+      entity: "climate.sample_heat_pump",
+      actions: {
+        cool: {
+          domain: "script",
+          service: "turn_on",
+          data: {
+            entity_id: "script.sample_cool_23",
+          },
+        },
+        cleanAir: {
+          domain: "script",
+          service: "turn_on",
+          data: {
+            entity_id: "script.sample_dry_then_fan_30m",
+          },
+        },
+        off: {
+          domain: "climate",
+          service: "turn_off",
+          data: {
+            entity_id: "climate.sample_heat_pump",
+          },
+        },
+      },
+    });
     expect(defaultDashboardConfig.media.players).toEqual([
       { label: "Display Player", entity: "media_player.sample_display" },
       { label: "Sample Speaker", entity: "media_player.sample_speaker" },
@@ -44,14 +71,11 @@ describe("normalizeDashboardConfig", () => {
     expect(defaultDashboardConfig.media.sonos).toEqual({
       playerEntity: "media_player.sample_speaker",
       favoritesSensorEntity: "sensor.sample_favorites",
-      limit: 3,
+      limit: 5,
       ignoredSources: ["TV"],
       ignoredContentIds: ["x-rincon-stream:"],
     });
-    expect(defaultDashboardConfig.media.idlePlaylistButtons.map((button) => button.service.data?.entity_id)).toEqual([
-      "switch.sample_preset_one",
-      "switch.sample_ambient_mode",
-    ]);
+    expect("idlePlaylistButtons" in defaultDashboardConfig.media).toBe(false);
     expect(
       defaultDashboardConfig.badges.map((badge) => ({
         label: badge.label,
@@ -153,7 +177,6 @@ describe("normalizeDashboardConfig", () => {
     const config = normalizeDashboardConfig({
       media: {
         players: [{ label: "Office Speaker", entity: "media_player.office" }],
-        idlePlaylistButtons: [],
       },
     });
 
@@ -178,8 +201,9 @@ describe("normalizeDashboardConfig", () => {
     expect(bundledConfig.sceneTiles).toEqual([]);
     expect(bundledConfig.controls).toEqual([]);
     expect(bundledConfig.badges).toEqual([]);
+    expect(bundledConfig.climate).toBeUndefined();
     expect(bundledConfig.media.players).toEqual([]);
-    expect(bundledConfig.media.idlePlaylistButtons).toEqual([]);
+    expect("idlePlaylistButtons" in bundledConfig.media).toBe(false);
     expect(panelConfigToDashboardConfig(undefined, bundledConfig).weather.entity).toBe(
       "weather.local_example",
     );

@@ -14,6 +14,8 @@ npm run dev
 ```
 
 The dev page at `http://127.0.0.1:5173/` loads a mock Home Assistant state object so the dashboard can be tested without a live Home Assistant instance.
+Use `?alerts=1`, `?status=running`, `?status=finished`, or `?badges=all`
+to force the mock alert/status pills while testing locally.
 
 ## Configure Entities
 
@@ -28,7 +30,7 @@ supports:
 - Device control rows
 - Conditional media card
 
-The media card shows the most recently active playing player from `media.players`. Sonos can be configured through `media.sonos`; real Sonos music playback takes over the card, TV relay playback is ignored, and the idle state shows the first Sonos favorites before falling back to `idlePlaylistButtons`.
+The media card shows the most recently active playing player from `media.players`. Sonos can be configured through `media.sonos`; real Sonos music playback takes over the card, TV relay playback is ignored, and the idle state shows the first Sonos favorites.
 
 The public template is available in `dashy.config.sample.json`. For local
 private settings, keep a copy at `dashy.config.local.json`; that file is ignored

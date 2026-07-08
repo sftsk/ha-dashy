@@ -189,6 +189,33 @@
       }
     }
   ],
+  "climate": {
+    "label": "AC",
+    "entity": "climate.sample_heat_pump",
+    "actions": {
+      "cool": {
+        "domain": "script",
+        "service": "turn_on",
+        "data": {
+          "entity_id": "script.sample_cool_23"
+        }
+      },
+      "cleanAir": {
+        "domain": "script",
+        "service": "turn_on",
+        "data": {
+          "entity_id": "script.sample_dry_then_fan_30m"
+        }
+      },
+      "off": {
+        "domain": "climate",
+        "service": "turn_off",
+        "data": {
+          "entity_id": "climate.sample_heat_pump"
+        }
+      }
+    }
+  },
   "media": {
     "players": [
       {
@@ -203,37 +230,9 @@
     "sonos": {
       "playerEntity": "media_player.sample_speaker",
       "favoritesSensorEntity": "sensor.sample_favorites",
-      "limit": 3,
-      "ignoredSources": [
-        "TV"
-      ],
-      "ignoredContentIds": [
-        "x-rincon-stream:"
-      ]
-    },
-    "idlePlaylistButtons": [
-      {
-        "label": "Preset One",
-        "icon": "playlist",
-        "service": {
-          "domain": "homeassistant",
-          "service": "toggle",
-          "data": {
-            "entity_id": "switch.sample_preset_one"
-          }
-        }
-      },
-      {
-        "label": "Ambient Mode",
-        "icon": "droplet",
-        "service": {
-          "domain": "homeassistant",
-          "service": "toggle",
-          "data": {
-            "entity_id": "switch.sample_ambient_mode"
-          }
-        }
-      }
-    ]
+      "limit": 5,
+      "ignoredSources": ["TV"],
+      "ignoredContentIds": ["x-rincon-stream:"]
+    }
   }
 }

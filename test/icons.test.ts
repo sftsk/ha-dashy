@@ -7,5 +7,6 @@ describe("iconSvg", () => {
 
     expect(iconSvg("circle")).not.toBe(fallback);
     expect(iconSvg("owl")).not.toBe(fallback);
+    expect(iconSvg("shuffle")).not.toBe(fallback);
   });
 });

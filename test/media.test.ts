@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  browseSonosFavoriteArtwork,
   MediaActivityTracker,
   getMediaDisplayMode,
   parseSonosFavorites,
@@ -11,17 +12,6 @@ const config: DashboardConfig["media"] = {
   players: [
     { label: "Display Player", entity: "media_player.sample_display" },
     { label: "Sample Speaker", entity: "media_player.sample_speaker" },
-  ],
-  idlePlaylistButtons: [
-    {
-      label: "Sample Preset",
-      icon: "playlist",
-      service: {
-        domain: "script",
-        service: "turn_on",
-        data: { entity_id: "script.sample_preset" },
-      },
-    },
   ],
   sonos: {
     playerEntity: "media_player.sample_speaker",
@@ -69,9 +59,81 @@ describe("MediaActivityTracker", () => {
       "media_player.sample_speaker": "playing",
     }))?.entity).toBe("media_player.sample_speaker");
   });
+
+  it("keeps a paused player selected after it was playing", () => {
+    const tracker = new MediaActivityTracker();
+    const playingState = hass({
+      "media_player.sample_display": {
+        state: "playing",
+        attributes: { media_title: "Sample Video" },
+      },
+    });
+    const pausedState = hass({
+      "media_player.sample_display": {
+        state: "paused",
+        attributes: { media_title: "Sample Video" },
+      },
+    });
+
+    tracker.update(config.players, playingState, 1000);
+    tracker.update(config.players, pausedState, 2000);
+
+    expect(tracker.selected(config.players, pausedState)?.entity).toBe(
+      "media_player.sample_display",
+    );
+  });
 });
 
 describe("getMediaDisplayMode", () => {
+  it("does not keep a paused standby display selected after it was active", () => {
+    const tracker = new MediaActivityTracker();
+    const previousState = hass({
+      "media_player.sample_display": {
+        state: "playing",
+        attributes: {
+          media_title: "Sample Video",
+          app_name: "Video App",
+        },
+      },
+      "media_player.sample_speaker": "idle",
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+    const standbyState = hass({
+      "media_player.sample_display": {
+        state: "paused",
+        attributes: {
+          app_name: "Standby",
+        },
+      },
+      "media_player.sample_speaker": "idle",
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+
+    tracker.update(config.players, previousState, Date.now() - 1_000);
+    tracker.update(config.players, standbyState, Date.now());
+
+    const mode = getMediaDisplayMode(config, tracker, standbyState);
+
+    expect(mode.kind).toBe("idle");
+    expect(mode.kind === "idle" ? mode.buttons.map((button) => button.label) : []).toEqual([
+      "Favorite One",
+    ]);
+  });
+
   it("selects Display Player when Sonos is only relaying TV audio", () => {
     const tracker = new MediaActivityTracker();
     const state = hass({
@@ -84,7 +146,7 @@ describe("getMediaDisplayMode", () => {
         },
       },
     });
-    tracker.update(config.players, state, 1000);
+    tracker.update(config.players, state, Date.now());
 
     expect(getMediaDisplayMode(config, tracker, state)).toEqual({
       kind: "player",
@@ -104,7 +166,7 @@ describe("getMediaDisplayMode", () => {
         },
       },
     });
-    tracker.update(config.players, state, 1000);
+    tracker.update(config.players, state, Date.now());
 
     expect(getMediaDisplayMode(config, tracker, state)).toEqual({
       kind: "player",
@@ -148,7 +210,79 @@ describe("getMediaDisplayMode", () => {
 
     expect(mode).toEqual({
       kind: "idle",
-      buttons: config.idlePlaylistButtons,
+      buttons: [],
+    });
+  });
+
+  it("falls back to idle favorites when Sonos music state is older than an hour", () => {
+    const tracker = new MediaActivityTracker();
+    const previousState = hass({
+      "media_player.sample_display": "idle",
+      "media_player.sample_speaker": {
+        state: "playing",
+        attributes: {
+          source: "Music Service",
+          media_content_id: "favorite:sample-1",
+        },
+      },
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+    const staleState = hass({
+      "media_player.sample_display": "idle",
+      "media_player.sample_speaker": {
+        state: "playing",
+        attributes: {
+          source: "Music Service",
+          media_content_id: "favorite:sample-1",
+        },
+      },
+      "sensor.sample_favorites": {
+        state: "1",
+        attributes: {
+          items: {
+            "favorite:sample-1": "Favorite One",
+          },
+        },
+      },
+    });
+
+    tracker.update(config.players, previousState, Date.now() - 3_600_001);
+    tracker.update(config.players, staleState, Date.now());
+
+    const mode = getMediaDisplayMode(config, tracker, staleState);
+
+    expect(mode.kind).toBe("idle");
+    expect(mode.kind === "idle" ? mode.buttons.map((button) => button.label) : []).toEqual([
+      "Favorite One",
+    ]);
+  });
+
+  it("keeps recently active Sonos music visible within the freshness window", () => {
+    const tracker = new MediaActivityTracker();
+    const state = hass({
+      "media_player.sample_display": "idle",
+      "media_player.sample_speaker": {
+        state: "playing",
+        attributes: {
+          source: "Music Service",
+          media_content_id: "favorite:sample-1",
+        },
+      },
+    });
+
+    tracker.update(config.players, state, Date.now() - 3_599_999);
+    tracker.update(config.players, state, Date.now());
+
+    expect(getMediaDisplayMode(config, tracker, state)).toEqual({
+      kind: "player",
+      player: { label: "Sample Speaker", entity: "media_player.sample_speaker" },
     });
   });
 
@@ -215,6 +349,177 @@ describe("Sonos favorites", () => {
       { id: "favorite:sample-1", title: "Favorite One" },
       { id: "favorite:sample-2", title: "Favorite Two" },
     ]);
+  });
+
+  it("parses optional Sonos favorite artwork metadata", () => {
+    const favorites = parseSonosFavorites(
+      hass({
+        "sensor.sample_favorites": {
+          state: "2",
+          attributes: {
+            items: [
+              {
+                id: "favorite:sample-1",
+                title: "Favorite One",
+                thumbnail: "/local/favorite-one.jpg",
+              },
+              {
+                media_content_id: "favorite:sample-2",
+                name: "Favorite Two",
+                entity_picture: "/local/favorite-two.jpg",
+              },
+            ],
+          },
+        },
+      }),
+      "sensor.sample_favorites",
+    );
+
+    expect(favorites).toEqual([
+      {
+        id: "favorite:sample-1",
+        title: "Favorite One",
+        art: "/local/favorite-one.jpg",
+      },
+      {
+        id: "favorite:sample-2",
+        title: "Favorite Two",
+        art: "/local/favorite-two.jpg",
+      },
+    ]);
+  });
+
+  it("parses Sonos favorites and nested artwork from alternate favorites attributes", () => {
+    const favorites = parseSonosFavorites(
+      hass({
+        "sensor.sample_favorites": {
+          state: "3",
+          attributes: {
+            favorites: {
+              "favorite:sample-1": {
+                title: "Favorite One",
+                thumbnail: { url: "/local/favorite-one.jpg" },
+              },
+              "favorite:sample-2": {
+                name: "Favorite Two",
+                image: { uri: "/local/favorite-two.jpg" },
+              },
+              "favorite:sample-3": {
+                label: "Favorite Three",
+              },
+            },
+          },
+        },
+      }),
+      "sensor.sample_favorites",
+    );
+
+    expect(favorites).toEqual([
+      {
+        id: "favorite:sample-1",
+        title: "Favorite One",
+        art: "/local/favorite-one.jpg",
+      },
+      {
+        id: "favorite:sample-2",
+        title: "Favorite Two",
+        art: "/local/favorite-two.jpg",
+      },
+      {
+        id: "favorite:sample-3",
+        title: "Favorite Three",
+      },
+    ]);
+  });
+
+  it("collects Sonos favorite artwork from Home Assistant media browser thumbnails", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const state: HassLike = {
+      ...hass({}),
+      callWS: async (message) => {
+        calls.push(message);
+        if (!message.media_content_type) {
+          return {
+            title: "Sonos",
+            media_content_type: "root",
+            media_content_id: "",
+            children: [
+              {
+                title: "Favorites",
+                media_content_type: "favorites",
+                media_content_id: "",
+                can_expand: true,
+              },
+            ],
+          };
+        }
+
+        if (message.media_content_type === "favorites") {
+          return {
+            title: "Favorites",
+            media_content_type: "favorites",
+            media_content_id: "",
+            children: [
+              {
+                title: "Playlists",
+                media_content_type: "favorites_folder",
+                media_content_id: "object.container.playlistContainer",
+                can_expand: true,
+              },
+            ],
+          };
+        }
+
+        return {
+          title: "Playlists",
+          media_content_type: "favorites_folder",
+          media_content_id: "object.container.playlistContainer",
+          children: [
+            {
+              title: "A-List Pop",
+              media_content_type: "favorite_item_id",
+              media_content_id: "favorite:sample-1",
+              thumbnail:
+                "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-1?token=abc",
+            },
+            {
+              title: "Bedtime Beats",
+              media_content_type: "favorite_item_id",
+              media_content_id: "favorite:sample-2",
+              thumbnail:
+                "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-2?token=abc",
+            },
+          ],
+        };
+      },
+    };
+
+    const artwork = await browseSonosFavoriteArtwork(
+      state,
+      "media_player.sample_speaker",
+    );
+
+    expect(calls).toEqual([
+      {
+        type: "media_player/browse_media",
+        entity_id: "media_player.sample_speaker",
+      },
+      {
+        type: "media_player/browse_media",
+        entity_id: "media_player.sample_speaker",
+        media_content_id: "",
+        media_content_type: "favorites",
+      },
+      {
+        type: "media_player/browse_media",
+        entity_id: "media_player.sample_speaker",
+        media_content_id: "object.container.playlistContainer",
+        media_content_type: "favorites_folder",
+      },
+    ]);
+    expect(artwork.get("favorite:sample-1")).toContain("favorite%3Asample-1");
+    expect(artwork.get("a-list pop")).toContain("favorite%3Asample-1");
+    expect(artwork.get("favorite:sample-2")).toContain("favorite%3Asample-2");
   });
 
   it("resolves the Sonos display name from favorites before falling back to media_playlist", () => {

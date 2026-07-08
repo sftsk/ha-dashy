@@ -6,10 +6,11 @@ type DashyElement = HTMLElement & {
 };
 
 const MOCK_ART =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 340'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop stop-color='%230a2c2b'/%3E%3Cstop offset='.55' stop-color='%232e4a27'/%3E%3Cstop offset='1' stop-color='%23b8874a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='600' height='340' fill='url(%23g)'/%3E%3Ccircle cx='470' cy='230' r='72' fill='%23f0d7a1' fill-opacity='.28'/%3E%3Cpath d='M0 260h600v80H0z' fill='%23151617' fill-opacity='.46'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 340'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop stop-color='%230a2c2b'/%3E%3Cstop offset='.55' stop-color='%232e4a27'/%3E%3Cstop offset='1' stop-color='%23b8874a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='600' height='340' fill='url(%23g)'/%3E%3Ccircle cx='470' cy='230' r='72' fill='%23f0d7a1' fill-opacity='.28'/%3E%3C/svg%3E";
 
 export function attachMockHomeAssistant(element: DashyElement): void {
-  const mediaScenario = new URLSearchParams(window.location.search).get("mock") ?? "sonos";
+  const params = new URLSearchParams(window.location.search);
+  const mediaScenario = params.get("mock") ?? "sonos";
   const states: Record<string, HassEntity> = {
     "weather.sample_home": entity("weather.sample_home", "cloudy", {
       temperature: 19.1,
@@ -54,6 +55,11 @@ export function attachMockHomeAssistant(element: DashyElement): void {
     "light.sample_scene_10": entity("light.sample_scene_10", "on"),
     "switch.sample_outlet": entity("switch.sample_outlet", "off"),
     "cover.sample_shade": entity("cover.sample_shade", "open"),
+    "climate.sample_heat_pump": entity("climate.sample_heat_pump", "off", {
+      current_temperature: 24.8,
+      temperature: 23,
+      fan_mode: "auto",
+    }),
     "switch.sample_preset_one": entity("switch.sample_preset_one", "off"),
     "switch.sample_ambient_mode": entity("switch.sample_ambient_mode", "off"),
     "sensor.sample_favorites": entity("sensor.sample_favorites", "6", {
@@ -69,6 +75,8 @@ export function attachMockHomeAssistant(element: DashyElement): void {
     ...mockMediaStates(mediaScenario),
   };
 
+  applyBadgeParams(states, params);
+
   const hass: HassLike = {
     states,
     callService: async (domain, service, data) => {
@@ -79,8 +87,34 @@ export function attachMockHomeAssistant(element: DashyElement): void {
       if (domain === "media_player" && entityId && states[entityId]) {
         states[entityId] = mediaTransition(states[entityId], service, data);
       }
+      if (domain === "climate" && entityId && states[entityId]) {
+        states[entityId] = climateTransition(states[entityId], service, data);
+      }
+      if (domain === "script" && entityId === "script.sample_dry_then_fan_30m") {
+        states["climate.sample_heat_pump"] = {
+          ...states["climate.sample_heat_pump"],
+          state: "dry",
+          attributes: {
+            ...states["climate.sample_heat_pump"].attributes,
+            fan_mode: "powerful",
+          },
+        };
+      }
+      if (domain === "script" && entityId === "script.sample_cool_23") {
+        states["climate.sample_heat_pump"] = {
+          ...states["climate.sample_heat_pump"],
+          state: "cool",
+          attributes: {
+            ...states["climate.sample_heat_pump"].attributes,
+            temperature: 23,
+            swing_mode: "windnice",
+            swing_horizontal_mode: "stop",
+          },
+        };
+      }
       element.hass = { ...hass, states: { ...states } };
     },
+    callWS: async (message) => mockBrowseMedia(message),
   };
 
   element.panel = { config: {} };
@@ -96,6 +130,71 @@ export function attachMockHomeAssistant(element: DashyElement): void {
   }, 5000);
 }
 
+function applyBadgeParams(
+  states: Record<string, HassEntity>,
+  params: URLSearchParams,
+): void {
+  const badges = params.get("badges")?.toLocaleLowerCase();
+  const alerts = params.get("alerts")?.toLocaleLowerCase();
+  const status =
+    params.get("status")?.toLocaleLowerCase() ??
+    (badges === "status" || badges === "running" ? "running" : undefined) ??
+    (badges === "finished" ? "finished" : undefined);
+
+  if (
+    badges === "all" ||
+    badges === "alerts" ||
+    badges === "alert" ||
+    alerts === "1" ||
+    alerts === "true" ||
+    alerts === "on"
+  ) {
+    states["binary_sensor.sample_bin_full"] = {
+      ...states["binary_sensor.sample_bin_full"],
+      state: "on",
+    };
+    states["sensor.sample_air_quality"] = {
+      ...states["sensor.sample_air_quality"],
+      state: "1250",
+    };
+    states["sensor.sample_water_level"] = {
+      ...states["sensor.sample_water_level"],
+      state: "1",
+    };
+  }
+
+  if (badges === "all" || status === "running" || status === "run") {
+    states["sensor.sample_appliance_state"] = {
+      ...states["sensor.sample_appliance_state"],
+      state: "Run",
+    };
+    states["sensor.sample_appliance_remaining"] = {
+      ...states["sensor.sample_appliance_remaining"],
+      state: "42 min",
+    };
+    states["sensor.sample_secondary_appliance_state"] = {
+      ...states["sensor.sample_secondary_appliance_state"],
+      state: "Run",
+    };
+    states["sensor.sample_secondary_appliance_remaining"] = {
+      ...states["sensor.sample_secondary_appliance_remaining"],
+      state: "18 min",
+    };
+    return;
+  }
+
+  if (status === "finished" || status === "done") {
+    states["sensor.sample_appliance_state"] = {
+      ...states["sensor.sample_appliance_state"],
+      state: "Finished",
+    };
+    states["sensor.sample_secondary_appliance_state"] = {
+      ...states["sensor.sample_secondary_appliance_state"],
+      state: "Finished",
+    };
+  }
+}
+
 function entity(
   entityId: string,
   state: string,
@@ -108,6 +207,68 @@ function entity(
       friendly_name: entityId.split(".")[1]?.replaceAll("_", " ") ?? entityId,
       ...attributes,
     },
+  };
+}
+
+function mockBrowseMedia(message: Record<string, unknown>): Record<string, unknown> {
+  if (!message.media_content_type) {
+    return {
+      title: "Sonos",
+      media_content_type: "root",
+      media_content_id: "",
+      can_play: false,
+      can_expand: true,
+      children: [
+        {
+          title: "Favorites",
+          media_content_type: "favorites",
+          media_content_id: "",
+          can_play: false,
+          can_expand: true,
+        },
+      ],
+    };
+  }
+
+  if (message.media_content_type === "favorites") {
+    return {
+      title: "Favorites",
+      media_content_type: "favorites",
+      media_content_id: "",
+      can_play: false,
+      can_expand: true,
+      children: [
+        {
+          title: "Playlists",
+          media_content_type: "favorites_folder",
+          media_content_id: "object.container.playlistContainer",
+          can_play: false,
+          can_expand: true,
+        },
+      ],
+    };
+  }
+
+  return {
+    title: "Playlists",
+    media_content_type: "favorites_folder",
+    media_content_id: "object.container.playlistContainer",
+    can_play: false,
+    can_expand: true,
+    children: [
+      "Favorite One",
+      "Favorite Two",
+      "Favorite Three",
+      "Favorite Four",
+      "Favorite Five",
+    ].map((title, index) => ({
+      title,
+      media_content_type: "favorite_item_id",
+      media_content_id: `favorite:sample-${index + 1}`,
+      can_play: true,
+      can_expand: false,
+      thumbnail: MOCK_ART,
+    })),
   };
 }
 
@@ -138,6 +299,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
           app_name: "Video App",
           media_position: 185,
           media_duration: 250,
+          media_position_updated_at: new Date().toISOString(),
         },
       ),
     };
@@ -154,6 +316,8 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
         entity_picture: MOCK_ART,
         media_position: 82,
         media_duration: 230,
+        media_position_updated_at: new Date().toISOString(),
+        shuffle: false,
       }),
       "media_player.sample_display": entity(
         "media_player.sample_display",
@@ -172,6 +336,8 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
       entity_picture: MOCK_ART,
       media_position: 82,
       media_duration: 230,
+      media_position_updated_at: new Date().toISOString(),
+      shuffle: false,
     }),
     "media_player.sample_display": entity(
       "media_player.sample_display",
@@ -181,6 +347,7 @@ function mockMediaStates(scenario: string): Record<string, HassEntity> {
         app_name: "Video App",
         media_position: 185,
         media_duration: 250,
+        media_position_updated_at: new Date().toISOString(),
       },
     ),
   };
@@ -196,6 +363,12 @@ function mediaTransition(
   }
   if (service === "media_play_pause") {
     return { ...entityState, state: entityState.state === "playing" ? "paused" : "playing" };
+  }
+  if (service === "media_play") {
+    return { ...entityState, state: "playing" };
+  }
+  if (service === "media_pause") {
+    return { ...entityState, state: "paused" };
   }
   if (service === "play_media") {
     const extra = data?.extra;
@@ -215,5 +388,50 @@ function mediaTransition(
       },
     };
   }
+  if (service === "shuffle_set") {
+    return {
+      ...entityState,
+      attributes: {
+        ...entityState.attributes,
+        shuffle: data?.shuffle === true,
+      },
+    };
+  }
+  return entityState;
+}
+
+function climateTransition(
+  entityState: HassEntity,
+  service: string,
+  data?: Record<string, unknown>,
+): HassEntity {
+  if (service === "turn_off") {
+    return { ...entityState, state: "off" };
+  }
+
+  if (
+    (service === "set_temperature" || service === "set_hvac_mode") &&
+    typeof data?.hvac_mode === "string"
+  ) {
+    return {
+      ...entityState,
+      state: data.hvac_mode,
+      attributes: {
+        ...entityState.attributes,
+        temperature: data.temperature ?? entityState.attributes.temperature,
+      },
+    };
+  }
+
+  if (service === "set_fan_mode" && typeof data?.fan_mode === "string") {
+    return {
+      ...entityState,
+      attributes: {
+        ...entityState.attributes,
+        fan_mode: data.fan_mode,
+      },
+    };
+  }
+
   return entityState;
 }

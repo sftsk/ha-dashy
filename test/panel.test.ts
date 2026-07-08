@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/main";
 import type { HassLike } from "../src/types";
 
@@ -45,6 +45,15 @@ function baseHass(callService = vi.fn()): HassLike {
         state: "open",
         attributes: {},
       },
+      "climate.sample_heat_pump": {
+        entity_id: "climate.sample_heat_pump",
+        state: "off",
+        attributes: {
+          current_temperature: 24.8,
+          temperature: 23,
+          fan_mode: "auto",
+        },
+      },
     },
     callService,
   };
@@ -70,7 +79,10 @@ function addSonosFavorites(hass: HassLike): HassLike {
     state: "6",
     attributes: {
       items: {
-        "favorite:sample-1": "Favorite One",
+        "favorite:sample-1": {
+          title: "Favorite One With A Very Long Name That Needs Truncation",
+          thumbnail: '/local/favorite-one "mix".jpg',
+        },
         "favorite:sample-2": "Favorite Two",
         "favorite:sample-3": "Favorite Three",
         "favorite:sample-4": "Favorite Four",
@@ -80,6 +92,30 @@ function addSonosFavorites(hass: HassLike): HassLike {
     },
   };
   return hass;
+}
+
+function addSonosFavoritesWithoutArt(hass: HassLike): HassLike {
+  hass.states["sensor.sample_favorites"] = {
+    entity_id: "sensor.sample_favorites",
+    state: "5",
+    attributes: {
+      items: {
+        "favorite:sample-1": "A-List Pop",
+        "favorite:sample-2": "Bedtime Beats",
+        "favorite:sample-3": "Electronic in Spatial Audio",
+        "favorite:sample-4": "Favourite Songs",
+        "favorite:sample-5": "Lo-Fi Breeze",
+      },
+    },
+  };
+  return hass;
+}
+
+async function flushPromises(times = 5): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
 function addActiveProblemBadges(hass: HassLike): HassLike {
@@ -156,7 +192,11 @@ describe("dashy-dashboard-panel", () => {
     document.body.style.overflow = "";
   });
 
-  it("renders idle playlist buttons and routes playlist clicks through hass.callService", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not render idle playlist buttons without Sonos favorites", () => {
     const callService = vi.fn().mockResolvedValue(undefined);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
@@ -165,20 +205,12 @@ describe("dashy-dashboard-panel", () => {
     document.body.append(element);
     element.hass = baseHass(callService);
 
-    const button = element.shadowRoot?.querySelector<HTMLButtonElement>(
-      '[data-dashy-action="playlist"][data-index="0"]',
-    );
-
-    expect(button?.textContent).toContain("Preset One");
-    button?.click();
-    await Promise.resolve();
-
-    expect(callService).toHaveBeenCalledWith("homeassistant", "toggle", {
-      entity_id: "switch.sample_preset_one",
-    });
+    expect(element.shadowRoot?.querySelector('[data-dashy-action="playlist"]')).toBeNull();
+    expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
+    expect(callService).not.toHaveBeenCalled();
   });
 
-  it("renders top three Sonos favorites while idle and optimistically starts the selected favorite", async () => {
+  it("renders up to five Sonos favorites as compact artwork cards while idle and optimistically starts the selected favorite", async () => {
     const serviceCall = deferred();
     const callService = vi.fn().mockReturnValue(serviceCall.promise);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
@@ -195,17 +227,57 @@ describe("dashy-dashboard-panel", () => {
     ];
 
     expect(buttons.map((button) => button.textContent?.trim())).toEqual([
-      "Favorite One",
+      "Favorite One With A Very Long Name That Needs Truncation",
       "Favorite Two",
       "Favorite Three",
+      "Favorite Four",
+      "Favorite Five",
     ]);
     expect(element.shadowRoot?.querySelector(".idle-media")?.textContent).not.toContain(
       "Choose a playlist",
     );
+    expect(element.shadowRoot?.querySelector(".idle-media")?.textContent).not.toContain(
+      "Start Music",
+    );
+    expect(element.shadowRoot?.querySelector(".idle-media.card")).toBeNull();
+    expect(buttons).toHaveLength(5);
+    expect(buttons[0].getAttribute("style")).toContain(
+      '--playlist-art: url("/local/favorite-one \\"mix\\".jpg")',
+    );
+    expect(buttons[0].querySelector(".playlist-art")).not.toBeNull();
+    expect(buttons[0].querySelector(".playlist-play-button")).not.toBeNull();
+    expect(buttons[0].querySelector(".playlist-note")).toBeNull();
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
     expect(styles).toContain(".idle-media .playlist-button");
-    expect(styles).toContain("grid-template-columns: 28px minmax(0, 1fr)");
-    expect(styles).toContain("white-space: nowrap");
+    expect(styles).toContain(
+      "grid-template-columns: repeat(auto-fill, minmax(clamp(64px, 22%, 220px), 1fr))",
+    );
+    expect(styles).not.toContain(
+      "grid-template-columns: repeat(auto-fit, minmax(clamp(64px, 22%, 220px), 1fr))",
+    );
+    expect(styles).not.toContain("clamp(64px, 22vw, 220px)");
+    expect(styles).not.toContain("clamp(72px, 23%, 260px)");
+    expect(styles).not.toContain("clamp(58px, 30%, 130px)");
+    expect(styles).toMatch(/\.playlist-button\s*{[^}]*aspect-ratio:\s*1 \/ 1;/s);
+    expect(styles).toMatch(/\.playlist-button\s*{[^}]*padding:\s*7px 7px 14px;/s);
+    expect(styles).toMatch(/\.playlist-art::after\s*{[^}]*bottom:\s*0;/s);
+    expect(styles).toMatch(/\.playlist-art::after\s*{[^}]*height:\s*58%;/s);
+    expect(styles).toMatch(/\.playlist-art::after\s*{[^}]*rgba\(0,\s*0,\s*0,\s*0\)/s);
+    expect(styles).toMatch(/\.playlist-play-button\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(/\.playlist-play-button\s*{[^}]*background:\s*rgb\(0 0 0 \/ 28%\)/s);
+    expect(styles).toMatch(
+      /\.playlist-play-button\s*{[^}]*width:\s*clamp\(30px,\s*7vw,\s*44px\);/s,
+    );
+    expect(styles).toMatch(
+      /\.playlist-play-button\s*{[^}]*height:\s*clamp\(30px,\s*7vw,\s*44px\);/s,
+    );
+    expect(styles).not.toMatch(/\.playlist-play-button\s*{[^}]*padding:\s*22%/s);
+    expect(styles).toMatch(/\.playlist-play-button path\s*{[^}]*transform:\s*scale\(0\.9\)/s);
+    expect(styles).toMatch(/\.playlist-button span\s*{[^}]*text-overflow:\s*ellipsis/s);
+    expect(styles).toMatch(
+      /\.idle-media \.playlist-button\s*{[^}]*padding:\s*5px 5px 11px;/s,
+    );
+    expect(styles).not.toMatch(/\.playlist-button span\s*{[^}]*background:/s);
 
     buttons[1].click();
     await Promise.resolve();
@@ -221,6 +293,78 @@ describe("dashy-dashboard-panel", () => {
       extra: { title: "Favorite Two" },
     });
     serviceCall.resolve();
+  });
+
+  it("hydrates idle playlist artwork from the Home Assistant Sonos media browser", async () => {
+    const callWS = vi.fn(async (message: Record<string, unknown>) => {
+      if (!message.media_content_type) {
+        return {
+          title: "Sonos",
+          media_content_type: "root",
+          media_content_id: "",
+          children: [
+            {
+              title: "Favorites",
+              media_content_type: "favorites",
+              media_content_id: "",
+              can_expand: true,
+            },
+          ],
+        };
+      }
+
+      if (message.media_content_type === "favorites") {
+        return {
+          title: "Favorites",
+          media_content_type: "favorites",
+          media_content_id: "",
+          children: [
+            {
+              title: "Playlists",
+              media_content_type: "favorites_folder",
+              media_content_id: "object.container.playlistContainer",
+              can_expand: true,
+            },
+          ],
+        };
+      }
+
+      return {
+        title: "Playlists",
+        media_content_type: "favorites_folder",
+        media_content_id: "object.container.playlistContainer",
+        children: [
+          {
+            title: "A-List Pop",
+            media_content_type: "favorite_item_id",
+            media_content_id: "favorite:sample-1",
+            thumbnail:
+              "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-1?token=abc",
+          },
+        ],
+      };
+    });
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavoritesWithoutArt(baseHass());
+    hass.callWS = callWS;
+
+    document.body.append(element);
+    element.hass = hass;
+    await flushPromises();
+
+    const firstPlaylist = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="playlist"]',
+    );
+
+    expect(callWS).toHaveBeenCalledWith({
+      type: "media_player/browse_media",
+      entity_id: "media_player.sample_speaker",
+    });
+    expect(firstPlaylist?.getAttribute("style")).toContain(
+      "/api/media_player_proxy/media_player.sample_speaker/browse_media/favorite_item_id/favorite%3Asample-1?token=abc",
+    );
   });
 
   it("renders the climate chart as a full-width stretched SVG", () => {
@@ -410,11 +554,33 @@ describe("dashy-dashboard-panel", () => {
     element.hass = hass;
 
     const mediaCard = element.shadowRoot?.querySelector(".now-playing");
+    const controls = mediaCard?.querySelector<HTMLElement>(".player-controls");
+    const powerButton = controls?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="media-power"]',
+    );
+    const transportButtons = [
+      ...(controls?.querySelectorAll<HTMLButtonElement>(
+        ".media-transport-controls [data-dashy-action]",
+      ) ?? []),
+    ];
+    const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(mediaCard?.textContent).toContain("Sample Video");
     expect(mediaCard?.textContent).toContain("Video App");
     expect(mediaCard?.textContent).not.toContain("Display Player");
     expect(element.shadowRoot?.querySelector(".media-more")).toBeNull();
+    expect(controls?.firstElementChild).toBe(powerButton);
+    expect(
+      transportButtons.map((button) => button.dataset.dashyAction),
+    ).toEqual(["media-previous", "media-playpause", "media-next"]);
+    expect(styles).toMatch(/\.media-controls\.player-controls\s*{[^}]*display:\s*grid/s);
+    expect(styles).toMatch(
+      /\.media-controls\.player-controls > button\[data-dashy-action="media-power"\]\s*{[^}]*justify-self:\s*start/s,
+    );
+    expect(styles).toMatch(/\.media-heading > div\s*{[^}]*min-width:\s*0/s);
+    expect(styles).toMatch(/\.media-title\s*{[^}]*white-space:\s*nowrap/s);
+    expect(styles).toMatch(/\.media-title\s*{[^}]*overflow:\s*hidden/s);
+    expect(styles).toMatch(/\.media-title\s*{[^}]*text-overflow:\s*ellipsis/s);
   });
 
   it("renders Display Player when Sonos is only relaying TV audio", () => {
@@ -447,6 +613,46 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.textContent).toContain("Sample Video");
     expect(mediaCard?.textContent).not.toContain("Sample Speaker");
     expect(element.shadowRoot?.querySelector(".media-more")).toBeNull();
+    expect(element.shadowRoot?.querySelector('[data-dashy-action="media-shuffle"]')).toBeNull();
+  });
+
+  it("does not render Display Player controls when Apple TV reports standby", () => {
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavorites(baseHass());
+
+    document.body.append(element);
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "playing",
+          attributes: {
+            media_title: "Sample Video",
+            app_name: "Video App",
+          },
+        },
+      },
+    };
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "paused",
+          attributes: {
+            app_name: "Standby",
+          },
+        },
+      },
+    };
+
+    expect(element.shadowRoot?.querySelector(".player-controls")).toBeNull();
+    expect(element.shadowRoot?.querySelector(".idle-media")).not.toBeNull();
   });
 
   it("renders Sonos playlist player with artwork background and a favorites menu", async () => {
@@ -471,6 +677,7 @@ describe("dashy-dashboard-panel", () => {
         media_playlist: "Fallback Favorite",
         media_content_id: "favorite:sample-1",
         entity_picture: "/api/media_player_proxy/media_player.sample_speaker",
+        shuffle: true,
       },
     };
     hass.states["sensor.sample_favorites"].attributes.items = {
@@ -490,6 +697,15 @@ describe("dashy-dashboard-panel", () => {
     const stopButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
       '[data-dashy-action="media-stop"]',
     );
+    const shuffleButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="media-shuffle"]',
+    );
+    const controls = mediaCard?.querySelector<HTMLElement>(".sonos-controls");
+    const transportButtons = [
+      ...(controls?.querySelectorAll<HTMLButtonElement>(
+        ".media-transport-controls [data-dashy-action]",
+      ) ?? []),
+    ];
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(mediaCard?.textContent).toContain("Sample artist should stay hidden - Sample track should stay hidden");
@@ -501,6 +717,14 @@ describe("dashy-dashboard-panel", () => {
     expect(mediaCard?.querySelector(".sonos-room")?.textContent).not.toContain("Sample Speaker");
     expect(mediaCard?.querySelector('[aria-label="Turn off"]')).toBeNull();
     expect(stopButton?.getAttribute("aria-label")).toBe("Stop");
+    expect(stopButton?.querySelector(".media-stop-icon")).not.toBeNull();
+    expect(shuffleButton?.getAttribute("aria-label")).toBe("Turn shuffle off");
+    expect(shuffleButton?.classList.contains("is-active")).toBe(true);
+    expect(controls?.firstElementChild).toBe(stopButton);
+    expect(controls?.lastElementChild).toBe(shuffleButton);
+    expect(
+      transportButtons.map((button) => button.dataset.dashyAction),
+    ).toEqual(["media-previous", "media-playpause", "media-next"]);
     expect(mediaCard?.getAttribute("style")).toContain("/api/media_player_proxy/media_player.sample_speaker");
     expect(menuButton).not.toBeNull();
     expect(mediaCard?.querySelector(".sonos-art")).not.toBeNull();
@@ -514,6 +738,29 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).toContain(".favorites-popover");
     expect(styles).toMatch(/\.media-heading\.sonos-heading\s*{[^}]*display:\s*flex/s);
     expect(styles).toMatch(/\.media-heading\.sonos-heading\s*{[^}]*justify-content:\s*space-between/s);
+    expect(styles).toMatch(/\.sonos-room h2\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(/\.sonos-playing \.media-title\s*{[^}]*color:\s*#fff/s);
+    expect(styles).toMatch(/\.media-controls\.sonos-controls,\s*\.media-controls\.player-controls\s*{[^}]*display:\s*grid/s);
+    expect(styles).toMatch(
+      /\.media-controls\.sonos-controls,\s*\.media-controls\.player-controls\s*{[^}]*grid-template-columns:\s*minmax\(34px,\s*1fr\) auto minmax\(34px,\s*1fr\)/s,
+    );
+    expect(styles).toMatch(/\.media-transport-controls\s*{[^}]*justify-self:\s*center/s);
+    expect(styles).toMatch(
+      /\.media-controls\.sonos-controls > button\[data-dashy-action="media-stop"\]\s*{[^}]*justify-self:\s*start/s,
+    );
+    expect(styles).toMatch(
+      /\.media-controls\.sonos-controls > button\[data-dashy-action="media-shuffle"\]\s*{[^}]*justify-self:\s*end/s,
+    );
+    expect(styles).toMatch(/\.media-controls button\.is-active\s*{[^}]*color:\s*#5da2ff/s);
+    expect(styles).toMatch(/\.media-controls button\.is-active\s*{[^}]*background:\s*transparent/s);
+
+    shuffleButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("media_player", "shuffle_set", {
+      entity_id: "media_player.sample_speaker",
+      shuffle: false,
+    });
 
     menuButton?.click();
     const favoriteButtons = [
@@ -523,7 +770,7 @@ describe("dashy-dashboard-panel", () => {
     ];
 
     expect(favoriteButtons.map((button) => button.textContent?.trim())).toEqual([
-      "Favorite One",
+      "Favorite One With A Very Long Name That Needs Truncation",
       "Favorite Two",
       "Favorite Three",
       "Favorite Four",
@@ -633,6 +880,127 @@ describe("dashy-dashboard-panel", () => {
     expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
   });
 
+  it("resumes a paused Sonos track with media_play instead of toggling or starting a favorite", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = addSonosFavorites(baseHass(callService));
+    hass.states["media_player.sample_speaker"] = {
+      entity_id: "media_player.sample_speaker",
+      state: "paused",
+      attributes: {
+        source: "Music Service",
+        media_playlist: "Favorite Two",
+        media_content_id: "favorite:sample-2",
+        media_title: "Current Track",
+        media_artist: "Current Artist",
+        media_position: 42,
+        media_duration: 180,
+        shuffle: true,
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="media-playpause"]')
+      ?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("media_player", "media_play", {
+      entity_id: "media_player.sample_speaker",
+    });
+    expect(callService).not.toHaveBeenCalledWith(
+      "media_player",
+      "media_play_pause",
+      expect.anything(),
+    );
+    expect(callService).not.toHaveBeenCalledWith(
+      "media_player",
+      "play_media",
+      expect.anything(),
+    );
+  });
+
+  it("updates active media progress from media_position_updated_at without a new hass state", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-27T12:00:00.000Z"));
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass();
+    hass.states["media_player.sample_display"] = {
+      entity_id: "media_player.sample_display",
+      state: "playing",
+      attributes: {
+        media_title: "Sample Video",
+        app_name: "Video App",
+        media_position: 10,
+        media_duration: 100,
+        media_position_updated_at: "2026-05-27T12:00:00.000Z",
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    const progressWidth = (): string | undefined =>
+      element.shadowRoot
+        ?.querySelector<HTMLElement>(".progress span")
+        ?.style.getPropertyValue("width");
+
+    expect(progressWidth()).toBe("10%");
+
+    vi.advanceTimersByTime(5_000);
+
+    expect(progressWidth()).toBe("15%");
+  });
+
+  it("keeps a paused generic media player visible after it was playing", () => {
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass();
+
+    document.body.append(element);
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "playing",
+          attributes: {
+            media_title: "Sample Video",
+            app_name: "Video App",
+          },
+        },
+      },
+    };
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "media_player.sample_display": {
+          entity_id: "media_player.sample_display",
+          state: "paused",
+          attributes: {
+            media_title: "Sample Video",
+            app_name: "Video App",
+          },
+        },
+      },
+    };
+
+    const mediaCard = element.shadowRoot?.querySelector<HTMLElement>(".now-playing");
+
+    expect(mediaCard?.textContent).toContain("Sample Video");
+    expect(mediaCard?.querySelector('[data-dashy-action="media-playpause"]')).not.toBeNull();
+    expect(element.shadowRoot?.querySelector(".idle-media")).toBeNull();
+  });
+
   it("renders weather without redundant label and keeps metrics on the main row until very narrow widths", () => {
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
@@ -695,7 +1063,7 @@ describe("dashy-dashboard-panel", () => {
       /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.scene-tile\s*{[^}]*aspect-ratio:\s*1 \/ 0\.62;/,
     );
     expect(styles).toMatch(
-      /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.idle-media \.playlist-button\s*{[^}]*min-height:\s*34px;/,
+      /@media \(max-width: 380px\), \(max-width: 430px\) and \(max-height: 760px\)[\s\S]*\.idle-media \.playlist-button\s*{[^}]*aspect-ratio:\s*1 \/ 1;/,
     );
   });
 
@@ -796,10 +1164,155 @@ describe("dashy-dashboard-panel", () => {
     expect(element.shadowRoot?.querySelector(".control-copy span")).toBeNull();
     expect(controlText).toContain("Outlet");
     expect(controlText).toContain("Shade");
-    expect(controlText).not.toContain("Off");
     expect(controlText).not.toContain("Open");
     expect(styles).toContain("color: #f0f0f2");
     expect(styles).not.toContain("#4b83b7");
+  });
+
+  it("renders climate as a configured-label three-way toggle in device controls and calls each service", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+      panel: { config: unknown };
+    };
+
+    document.body.append(element);
+    element.panel = { config: { climate: { label: "Coolio" } } };
+    element.hass = baseHass(callService);
+
+    const controls = element.shadowRoot?.querySelector('[data-region="controls"]');
+    const controlsCard = element.shadowRoot?.querySelector(".controls-card");
+    const media = element.shadowRoot?.querySelector('[data-region="media"]');
+    const climateRow = element.shadowRoot?.querySelector(".climate-row");
+    const climateActions = element.shadowRoot?.querySelector(".climate-actions");
+    const climateButtons = Array.from(
+      element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+        ".climate-actions button",
+      ) ?? [],
+    );
+    const [coolButton, cleanAirButton, offButton] = climateButtons;
+
+    expect(climateRow?.closest(".controls-card")).toBe(controlsCard);
+    expect(climateRow?.closest('[data-region="controls"]')).toBe(controls);
+    expect(climateRow?.textContent?.replace(/\s+/g, " ").trim()).toBe(
+      "Coolio Cool Clean Off",
+    );
+    expect(element.shadowRoot?.querySelector(".climate-card")).toBeNull();
+    expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
+    expect(climateActions?.getAttribute("role")).toBe("group");
+    expect(climateActions?.getAttribute("aria-label")).toBe("Coolio mode");
+    expect(climateButtons.map((button) => button.textContent?.trim())).toEqual([
+      "Cool",
+      "Clean",
+      "Off",
+    ]);
+    expect(climateButtons.map((button) => button.getAttribute("aria-pressed"))).toEqual([
+      "false",
+      "false",
+      "true",
+    ]);
+    expect(controls?.compareDocumentPosition(media as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    coolButton?.click();
+    await Promise.resolve();
+    cleanAirButton?.click();
+    await Promise.resolve();
+    offButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("script", "turn_on", {
+      entity_id: "script.sample_cool_23",
+    });
+    expect(callService).toHaveBeenCalledWith("script", "turn_on", {
+      entity_id: "script.sample_dry_then_fan_30m",
+    });
+    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
+      entity_id: "climate.sample_heat_pump",
+    });
+  });
+
+  it("marks the active climate toggle segment", () => {
+    const cases: Array<[string, string[]]> = [
+      ["cool", ["true", "false", "false"]],
+      ["dry", ["false", "true", "false"]],
+      ["fan_only", ["false", "true", "false"]],
+      ["off", ["false", "false", "true"]],
+      ["unknown", ["false", "false", "false"]],
+    ];
+
+    for (const [state, pressedStates] of cases) {
+      document.body.innerHTML = "";
+      const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+        hass: HassLike;
+      };
+      const hass = baseHass();
+      hass.states["climate.sample_heat_pump"] = {
+        ...hass.states["climate.sample_heat_pump"],
+        state,
+      };
+
+      document.body.append(element);
+      element.hass = hass;
+
+      const climateButtons = Array.from(
+        element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+          ".climate-actions button",
+        ) ?? [],
+      );
+
+      expect(climateButtons.map((button) => button.getAttribute("aria-pressed"))).toEqual(
+        pressedStates,
+      );
+      expect(climateButtons.map((button) => button.classList.contains("is-active"))).toEqual(
+        pressedStates.map((pressed) => pressed === "true"),
+      );
+    }
+  });
+
+  it("turns the heat pump off from the active clean segment", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass(callService);
+    hass.states["climate.sample_heat_pump"] = {
+      ...hass.states["climate.sample_heat_pump"],
+      state: "fan_only",
+      attributes: {
+        current_temperature: 24.8,
+        temperature: 23,
+        fan_mode: "powerful",
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    const climateRow = element.shadowRoot?.querySelector(".climate-row");
+    const offButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-off"]',
+    );
+
+    const cleanAirButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-cleanAir"]',
+    );
+
+    expect(climateRow?.textContent).toContain("AC");
+    expect(climateRow?.textContent).not.toContain("Fan Only");
+    expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
+    expect(cleanAirButton?.classList.contains("is-active")).toBe(true);
+    expect(offButton).not.toBeNull();
+    expect(offButton?.textContent?.trim()).toBe("Off");
+    expect(offButton?.getAttribute("aria-pressed")).toBe("false");
+
+    offButton?.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
+      entity_id: "climate.sample_heat_pump",
+    });
   });
 
   it("keeps device action buttons in-row on small screens", () => {
@@ -810,8 +1323,15 @@ describe("dashy-dashboard-panel", () => {
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(styles).toContain("grid-template-columns: 34px minmax(0, 1fr) auto");
+    expect(styles).toContain("grid-template-columns: repeat(3, minmax(0, 1fr))");
+    expect(styles).toContain(
+      '.climate-actions button.is-active[data-dashy-action="climate-off"]',
+    );
+    expect(styles).toContain(".control-actions.climate-actions");
+    expect(styles).toMatch(/\.climate-actions\s*{[^}]*gap:\s*0;/s);
     expect(styles).toContain("gap: 10px");
     expect(styles).not.toMatch(/\.control-actions\s*{[^}]*grid-column:\s*1 \/ -1/s);
+    expect(styles).not.toContain("flex-wrap: wrap");
   });
 
   it("optimistically marks a scene tile active before Home Assistant resolves", () => {

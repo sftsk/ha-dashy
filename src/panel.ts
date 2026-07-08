@@ -2,10 +2,12 @@ import { ChartSampler, buildSeriesPath, paddedRange } from "./chart";
 import { panelConfigToDashboardConfig } from "./config";
 import { iconSvg } from "./icons";
 import {
+  browseSonosFavoriteArtwork,
   getMediaDisplayMode,
   MediaActivityTracker,
   parseSonosFavorites,
   resolveSonosPlaylistName,
+  sonosArtworkLookupKey,
   sonosFavoriteButton,
 } from "./media";
 import {
@@ -14,18 +16,21 @@ import {
   serviceForToggleEntity,
 } from "./services";
 import type {
+  ClimateConfig,
   ControlConfig,
   DashboardBadgeConfig,
   DashboardConfig,
   HassEntity,
   HassLike,
   PanelInfo,
+  PlaylistButtonConfig,
   SceneTileConfig,
   ServiceCall,
 } from "./types";
 
 const CHART_WIDTH = 620;
 const CHART_HEIGHT = 96;
+const MAX_IDLE_PLAYLIST_CARDS = 5;
 
 type OptimisticMediaStart = {
   title: string;
@@ -46,11 +51,15 @@ export class DashyDashboardPanel extends HTMLElement {
   private config: DashboardConfig = panelConfigToDashboardConfig(undefined);
   private sampler = new ChartSampler(this.config.environment.maxSamples);
   private clockTimer: number | undefined;
+  private mediaProgressTimer: number | undefined;
   private toastTimer: number | undefined;
   private optimisticVersion = 0;
   private isFavoritesMenuOpen = false;
   private currentHass: HassLike | undefined;
   private currentPanel: PanelInfo | undefined;
+  private readonly sonosArtwork = new Map<string, string>();
+  private sonosArtworkRequestKey = "";
+  private sonosArtworkRequestVersion = 0;
   private pageOverflow:
     | {
         body: string;
@@ -69,13 +78,21 @@ export class DashyDashboardPanel extends HTMLElement {
     this.view.addEventListener("click", this.handleClick);
     this.updateClock();
     this.clockTimer = window.setInterval(() => this.updateClock(), 15_000);
+    this.mediaProgressTimer = window.setInterval(
+      () => this.updateMediaProgress(),
+      1_000,
+    );
     this.updateAll();
+    void this.refreshSonosArtwork();
   }
 
   disconnectedCallback(): void {
     this.view.removeEventListener("click", this.handleClick);
     if (this.clockTimer !== undefined) {
       window.clearInterval(this.clockTimer);
+    }
+    if (this.mediaProgressTimer !== undefined) {
+      window.clearInterval(this.mediaProgressTimer);
     }
     if (this.toastTimer !== undefined) {
       window.clearTimeout(this.toastTimer);
@@ -89,6 +106,7 @@ export class DashyDashboardPanel extends HTMLElement {
     this.sampleEnvironment();
     this.mediaTracker.update(this.config.media.players, value);
     this.updateAll();
+    void this.refreshSonosArtwork();
   }
 
   get hass(): HassLike | undefined {
@@ -100,6 +118,7 @@ export class DashyDashboardPanel extends HTMLElement {
     this.config = panelConfigToDashboardConfig(value?.config);
     this.sampler = new ChartSampler(this.config.environment.maxSamples);
     this.updateAll();
+    void this.refreshSonosArtwork();
   }
 
   get panel(): PanelInfo | undefined {
@@ -167,6 +186,11 @@ export class DashyDashboardPanel extends HTMLElement {
       return;
     }
 
+    if (action?.startsWith("climate-")) {
+      await this.callClimate(action.replace("climate-", ""));
+      return;
+    }
+
     if (action === "media-favorites-menu") {
       this.isFavoritesMenuOpen = !this.isFavoritesMenuOpen;
       this.updateMedia();
@@ -225,6 +249,19 @@ export class DashyDashboardPanel extends HTMLElement {
     await this.callServiceWithOptimism(serviceCall, control.entity);
   }
 
+  private async callClimate(action: string): Promise<void> {
+    const climate = this.config.climate;
+    if (!climate) {
+      return;
+    }
+
+    const serviceCall = climate.actions[action as keyof ClimateConfig["actions"]];
+    await this.callServiceWithOptimism(
+      serviceCall,
+      serviceCall?.domain === "climate" ? climate.entity : undefined,
+    );
+  }
+
   private async callMedia(action: string): Promise<void> {
     const hass = this.effectiveHass();
     const mode = getMediaDisplayMode(
@@ -239,9 +276,22 @@ export class DashyDashboardPanel extends HTMLElement {
     const serviceByAction: Record<string, ServiceCall> = {
       power: mediaService(mode.player.entity, "turn_off"),
       previous: mediaService(mode.player.entity, "media_previous_track"),
-      playpause: mediaService(mode.player.entity, "media_play_pause"),
+      playpause: mediaService(
+        mode.player.entity,
+        hass?.states[mode.player.entity]?.state === "playing"
+          ? "media_pause"
+          : "media_play",
+      ),
       next: mediaService(mode.player.entity, "media_next_track"),
       stop: mediaService(mode.player.entity, "media_stop"),
+      shuffle: {
+        domain: "media_player",
+        service: "shuffle_set",
+        data: {
+          entity_id: mode.player.entity,
+          shuffle: hass?.states[mode.player.entity]?.attributes.shuffle !== true,
+        },
+      },
     };
 
     await this.callServiceWithOptimism(
@@ -328,6 +378,15 @@ export class DashyDashboardPanel extends HTMLElement {
       return "off";
     }
 
+    if (
+      serviceCall.domain === "climate" &&
+      (serviceCall.service === "set_temperature" ||
+        serviceCall.service === "set_hvac_mode") &&
+      typeof serviceCall.data?.hvac_mode === "string"
+    ) {
+      return serviceCall.data.hvac_mode;
+    }
+
     if (serviceCall.service === "media_stop") {
       return "idle";
     }
@@ -342,6 +401,14 @@ export class DashyDashboardPanel extends HTMLElement {
 
     if (serviceCall.service === "media_play_pause") {
       return currentState === "playing" ? "paused" : "playing";
+    }
+
+    if (serviceCall.service === "media_play") {
+      return "playing";
+    }
+
+    if (serviceCall.service === "media_pause") {
+      return "paused";
     }
 
     if (serviceCall.service === "play_media") {
@@ -722,6 +789,7 @@ export class DashyDashboardPanel extends HTMLElement {
       "controls",
       `<article class="card controls-card">
         ${this.config.controls.map((control, index) => this.renderControl(control, index)).join("")}
+        ${this.config.climate ? this.renderClimateControl(this.config.climate) : ""}
       </article>`,
     );
   }
@@ -752,6 +820,93 @@ export class DashyDashboardPanel extends HTMLElement {
     </div>`;
   }
 
+  private renderClimateControl(climate: ClimateConfig): string {
+    const entity = this.entity(climate.entity);
+    const state = entity?.state ?? "unavailable";
+    const isCool = state === "cool";
+    const isClean = state === "dry" || state === "fan_only";
+    const isOff = state === "off";
+
+    return `<div class="control-row climate-row">
+      <div class="control-icon">${iconSvg("thermometer", "control-symbol")}</div>
+      <div class="control-copy">
+        <div>${escapeHtml(climate.label)}</div>
+      </div>
+      <div class="control-actions climate-actions" role="group" aria-label="${escapeHtml(climate.label)} mode">
+        <button class="${isCool ? "is-active" : ""}" data-dashy-action="climate-cool" type="button" aria-pressed="${isCool}">Cool</button>
+        <button class="${isClean ? "is-active" : ""}" data-dashy-action="climate-cleanAir" type="button" aria-pressed="${isClean}">Clean</button>
+        <button class="${isOff ? "is-active" : ""}" data-dashy-action="climate-off" type="button" aria-pressed="${isOff}">Off</button>
+      </div>
+    </div>`;
+  }
+
+  private async refreshSonosArtwork(): Promise<void> {
+    const hass = this.currentHass;
+    const sonos = this.config.media.sonos;
+    if (!sonos || !hass?.callWS) {
+      this.resetSonosArtwork();
+      return;
+    }
+
+    const favorites = parseSonosFavorites(hass, sonos.favoritesSensorEntity);
+    if (favorites.length === 0) {
+      this.resetSonosArtwork();
+      return;
+    }
+
+    const key = `${sonos.playerEntity}|${favorites
+      .map((favorite) => `${favorite.id}\u0000${favorite.title}`)
+      .join("\u0001")}`;
+    if (key === this.sonosArtworkRequestKey) {
+      return;
+    }
+
+    this.sonosArtworkRequestKey = key;
+    const version = this.sonosArtworkRequestVersion + 1;
+    this.sonosArtworkRequestVersion = version;
+
+    try {
+      const artwork = await browseSonosFavoriteArtwork(hass, sonos.playerEntity);
+      if (
+        this.sonosArtworkRequestVersion !== version ||
+        this.sonosArtworkRequestKey !== key
+      ) {
+        return;
+      }
+
+      this.sonosArtwork.clear();
+      for (const [artworkKey, url] of artwork) {
+        this.sonosArtwork.set(artworkKey, url);
+      }
+      this.updateMedia();
+    } catch {
+      // Home Assistant media browsing is optional; favorites still work without artwork.
+    }
+  }
+
+  private resetSonosArtwork(): void {
+    if (this.sonosArtwork.size === 0 && this.sonosArtworkRequestKey === "") {
+      return;
+    }
+
+    this.sonosArtwork.clear();
+    this.sonosArtworkRequestKey = "";
+    this.sonosArtworkRequestVersion += 1;
+    this.updateMedia();
+  }
+
+  private playlistArtwork(button: PlaylistButtonConfig): string | undefined {
+    if (button.art) {
+      return button.art;
+    }
+
+    const contentId = stringEntityId(button.service.data?.media_content_id);
+    return (
+      (contentId ? this.sonosArtwork.get(contentId) : undefined) ??
+      this.sonosArtwork.get(sonosArtworkLookupKey(button.label))
+    );
+  }
+
   private updateMedia(): void {
     const hass = this.effectiveHass();
     const mode = getMediaDisplayMode(
@@ -760,28 +915,30 @@ export class DashyDashboardPanel extends HTMLElement {
       hass,
     );
     if (mode.kind === "idle") {
+      const playlistButtons = mode.buttons.slice(0, MAX_IDLE_PLAYLIST_CARDS);
+      if (playlistButtons.length === 0) {
+        this.setRegion("media", "");
+        return;
+      }
+
       this.setRegion(
         "media",
-        `<article class="card media-card idle-media">
-          <div class="media-heading">
-            <div>
-              <h2>Start Music</h2>
-            </div>
-          </div>
-          <div class="playlist-grid">
-            ${mode.buttons
-              .map(
-                (
-                  button,
-                  index,
-                ) => `<button class="playlist-button" data-dashy-action="playlist" data-index="${index}" type="button">
-                  ${iconSvg(button.icon, "playlist-icon")}
+        `<div class="idle-media playlist-grid" aria-label="Start music">
+            ${playlistButtons
+              .map((button, index) => {
+                const artwork = this.playlistArtwork(button);
+                const artStyle = artwork
+                  ? ` style="--playlist-art: ${escapeHtml(cssUrl(artwork))}"`
+                  : "";
+                return `<button class="playlist-button" data-dashy-action="playlist" data-index="${index}" type="button" aria-label="Start ${escapeHtml(
+                  button.label,
+                )}"${artStyle}>
+                  <div class="playlist-art">${iconSvg("play", "playlist-play-button")}</div>
                   <span>${escapeHtml(button.label)}</span>
-                </button>`,
-              )
+                </button>`;
+              })
               .join("")}
-          </div>
-        </article>`,
+        </div>`,
       );
       return;
     }
@@ -805,7 +962,7 @@ export class DashyDashboardPanel extends HTMLElement {
       ]
         .filter(Boolean)
         .join(" · ") || titleCase(entity?.state ?? "playing");
-    const progress = progressPercent(attrs);
+    const progress = progressPercent(entity);
 
     this.setRegion(
       "media",
@@ -817,19 +974,21 @@ export class DashyDashboardPanel extends HTMLElement {
           </div>
         </div>
         <div class="media-body">
-          <div class="media-controls">
+          <div class="media-controls player-controls">
             <button data-dashy-action="media-power" type="button" aria-label="Turn off">${iconSvg(
               "power",
             )}</button>
-            <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
-              "previous",
-            )}</button>
-            <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
-              entity?.state === "playing" ? "pause" : "play",
-            )}</button>
-            <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
-              "skip",
-            )}</button>
+            <div class="media-transport-controls">
+              <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
+                "previous",
+              )}</button>
+              <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
+                entity?.state === "playing" ? "pause" : "play",
+              )}</button>
+              <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
+                "skip",
+              )}</button>
+            </div>
           </div>
           <div class="progress"><span style="width: ${progress}%"></span></div>
         </div>
@@ -860,9 +1019,10 @@ export class DashyDashboardPanel extends HTMLElement {
         ? `${artist} - ${mediaTitle}`
         : mediaTitle || playlistName;
     const picture = stringAttr(entity?.attributes.entity_picture);
-    const progress = progressPercent(entity?.attributes ?? {});
+    const progress = progressPercent(entity);
+    const shuffleEnabled = entity?.attributes.shuffle === true;
     const artStyle = picture
-      ? ` style="--media-art: url(&quot;${escapeHtml(picture)}&quot;)"`
+      ? ` style="--media-art: ${escapeHtml(cssUrl(picture))}"`
       : "";
 
     return `<article class="media-card now-playing sonos-playing ${loading ? "is-loading" : ""}" aria-busy="${loading ? "true" : "false"}"${artStyle}>
@@ -878,19 +1038,25 @@ export class DashyDashboardPanel extends HTMLElement {
       </div>
       <div class="media-body">
         <p class="media-title">${escapeHtml(title)}</p>
-        <div class="media-controls">
+        <div class="media-controls sonos-controls">
           <button data-dashy-action="media-stop" type="button" aria-label="Stop">${iconSvg(
-            "stop",
+            "power",
+            "icon media-stop-icon",
           )}</button>
-          <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
-            "previous",
-          )}</button>
-          <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
-            entity?.state === "playing" ? "pause" : "play",
-          )}</button>
-          <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
-            "skip",
-          )}</button>
+          <div class="media-transport-controls">
+            <button data-dashy-action="media-previous" type="button" aria-label="Previous">${iconSvg(
+              "previous",
+            )}</button>
+            <button data-dashy-action="media-playpause" type="button" aria-label="Play pause">${iconSvg(
+              entity?.state === "playing" ? "pause" : "play",
+            )}</button>
+            <button data-dashy-action="media-next" type="button" aria-label="Next">${iconSvg(
+              "skip",
+            )}</button>
+          </div>
+          <button class="${shuffleEnabled ? "is-active" : ""}" data-dashy-action="media-shuffle" type="button" aria-label="${
+            shuffleEnabled ? "Turn shuffle off" : "Turn shuffle on"
+          }">${iconSvg("shuffle")}</button>
         </div>
         <div class="progress"><span style="width: ${progress}%"></span></div>
       </div>
@@ -910,6 +1076,29 @@ export class DashyDashboardPanel extends HTMLElement {
           : ""
       }
     </article>`;
+  }
+
+  private updateMediaProgress(): void {
+    const hass = this.effectiveHass();
+    const mode = getMediaDisplayMode(
+      this.config.media,
+      this.mediaTracker,
+      hass,
+    );
+    if (mode.kind !== "player") {
+      return;
+    }
+
+    const progress = this.view.querySelector<HTMLElement>(
+      '[data-region="media"] .progress span',
+    );
+    if (!progress) {
+      return;
+    }
+
+    progress.style.width = `${progressPercent(
+      hass?.states[mode.player.entity],
+    )}%`;
   }
 
   private sampleEnvironment(): void {
@@ -1069,13 +1258,30 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#039;");
 }
 
+function cssUrl(value: string): string {
+  return `url("${cssString(value)}")`;
+}
+
+function cssString(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\a ")
+    .replaceAll("\r", "\\d ")
+    .replaceAll("\f", "\\c ");
+}
+
 function stringAttr(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function progressPercent(attrs: Record<string, unknown>): number {
+function progressPercent(
+  entity: HassEntity | undefined,
+  now = Date.now(),
+): number {
+  const attrs = entity?.attributes ?? {};
   const duration = Number(attrs.media_duration);
-  const position = Number(attrs.media_position);
+  const position = projectedMediaPosition(entity, now);
   if (
     !Number.isFinite(duration) ||
     !Number.isFinite(position) ||
@@ -1085,6 +1291,40 @@ function progressPercent(attrs: Record<string, unknown>): number {
   }
 
   return Math.max(0, Math.min(100, Math.round((position / duration) * 100)));
+}
+
+function projectedMediaPosition(
+  entity: HassEntity | undefined,
+  now: number,
+): number {
+  const attrs = entity?.attributes ?? {};
+  const position = Number(attrs.media_position);
+  if (!Number.isFinite(position)) {
+    return Number.NaN;
+  }
+
+  if (entity?.state !== "playing") {
+    return position;
+  }
+
+  const updatedAt =
+    timestampMs(attrs.media_position_updated_at) ??
+    timestampMs(entity.last_updated) ??
+    timestampMs(entity.last_changed);
+  if (updatedAt === undefined) {
+    return position;
+  }
+
+  return position + Math.max(0, (now - updatedAt) / 1_000);
+}
+
+function timestampMs(value: unknown): number | undefined {
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 const styles = `
@@ -1486,6 +1726,49 @@ const styles = `
     background: #fff;
   }
 
+  .climate-actions {
+    width: min(240px, 58vw);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid #4b4b50;
+    border-radius: 999px;
+    background: #252529;
+  }
+
+  .control-actions.climate-actions {
+    gap: 0;
+  }
+
+  .climate-actions button {
+    min-width: 0;
+    min-height: 38px;
+    padding: 0 12px;
+    border-radius: 0;
+    background: transparent;
+    color: #f0f0f2;
+    font-size: clamp(14px, 2.1vw, 17px);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .climate-actions button + button {
+    border-left: 1px solid #4b4b50;
+  }
+
+  .climate-actions button.is-active {
+    background: #375eea;
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+  }
+
+  .climate-actions button.is-active[data-dashy-action="climate-off"] {
+    background: #e5e5e7;
+    color: #1b1b1c;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
+  }
+
   .media-card {
     min-height: 0;
     overflow: hidden;
@@ -1563,19 +1846,19 @@ const styles = `
 
   .sonos-room .media-source-icon {
     flex: 0 0 auto;
-    color: #d7bf82;
+    color: #fff;
   }
 
   .sonos-room h2 {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #d7bf82;
+    color: #fff;
   }
 
   .sonos-playing .media-title {
-    max-width: 72%;
-    color: #e1c98b;
+    max-width: 100%;
+    color: #fff;
   }
 
   .sonos-playing.is-loading .media-title {
@@ -1583,7 +1866,7 @@ const styles = `
   }
 
   .sonos-playing .media-controls {
-    color: #e1c98b;
+    color: #fff;
   }
 
   .sonos-playing .progress {
@@ -1647,12 +1930,12 @@ const styles = `
     background: rgb(255 255 255 / 10%);
   }
 
-  .idle-media {
-    padding: 12px 16px 14px;
-  }
-
   .media-heading {
     display: block;
+  }
+
+  .media-heading > div {
+    min-width: 0;
   }
 
   .media-source-icon {
@@ -1666,6 +1949,11 @@ const styles = `
   }
 
   .media-title {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: clamp(21px, 3.5vw, 30px);
     line-height: 1.12;
   }
@@ -1696,6 +1984,32 @@ const styles = `
     gap: clamp(24px, 5vw, 48px);
   }
 
+  .media-controls.sonos-controls,
+  .media-controls.player-controls {
+    display: grid;
+    grid-template-columns: minmax(34px, 1fr) auto minmax(34px, 1fr);
+    gap: 0;
+  }
+
+  .media-transport-controls {
+    justify-self: center;
+    display: flex;
+    align-items: center;
+    gap: clamp(24px, 5vw, 48px);
+  }
+
+  .media-controls.sonos-controls > button[data-dashy-action="media-stop"] {
+    justify-self: start;
+  }
+
+  .media-controls.player-controls > button[data-dashy-action="media-power"] {
+    justify-self: start;
+  }
+
+  .media-controls.sonos-controls > button[data-dashy-action="media-shuffle"] {
+    justify-self: end;
+  }
+
   .media-controls button {
     width: 34px;
     height: 34px;
@@ -1707,6 +2021,11 @@ const styles = `
   .media-controls .icon {
     width: 29px;
     height: 29px;
+  }
+
+  .media-controls button.is-active {
+    color: #5da2ff;
+    background: transparent;
   }
 
   .progress {
@@ -1727,54 +2046,94 @@ const styles = `
   .playlist-grid {
     margin-top: 10px;
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(clamp(64px, 22%, 220px), 1fr));
     gap: 8px;
+  }
+
+  .idle-media.playlist-grid {
+    margin-top: 0;
   }
 
   .playlist-button {
-    min-height: 78px;
+    position: relative;
+    aspect-ratio: 1 / 1;
+    min-width: 0;
+    min-height: 0;
     border-radius: 14px;
+    overflow: hidden;
     background: #242427;
     border: 1px solid #3a3a3d;
     display: grid;
-    place-items: center;
-    gap: 8px;
-    padding: 10px 8px;
+    grid-template-rows: minmax(0, 1fr) auto;
+    align-items: end;
+    justify-items: stretch;
+    gap: 0;
+    padding: 7px 7px 14px;
+    color: #fff;
   }
 
-  .playlist-icon {
-    width: 28px;
-    height: 28px;
-    color: #37a6ff;
+  .playlist-art {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: #252529;
+    pointer-events: none;
+  }
+
+  .playlist-art::before,
+  .playlist-art::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .playlist-art::before {
+    background-image: var(--playlist-art, linear-gradient(135deg, #303844, #232427));
+    background-position: center;
+    background-size: cover;
+    opacity: 0.9;
+  }
+
+  .playlist-art::after {
+    top: auto;
+    bottom: 0;
+    height: 58%;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.74), rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0));
+  }
+
+  .playlist-play-button {
+    position: relative;
+    z-index: 1;
+    width: clamp(30px, 7vw, 44px);
+    height: clamp(30px, 7vw, 44px);
+    padding: 0;
+    border-radius: 999px;
+    background: rgb(0 0 0 / 28%);
+    color: #fff;
+    filter: drop-shadow(0 2px 5px rgb(0 0 0 / 55%));
+  }
+
+  .playlist-play-button path {
+    transform: scale(0.9);
+    transform-origin: center;
   }
 
   .playlist-button span {
-    font-size: clamp(16px, 2.6vw, 22px);
-    overflow-wrap: anywhere;
-  }
-
-  .idle-media .playlist-button {
-    min-height: 42px;
-    grid-template-columns: 28px minmax(0, 1fr);
-    place-items: initial;
-    align-items: center;
-    justify-items: start;
-    gap: 10px;
-    padding: 7px 10px;
-  }
-
-  .idle-media .playlist-icon {
-    width: 22px;
-    height: 22px;
-  }
-
-  .idle-media .playlist-button span {
+    position: relative;
+    z-index: 1;
     min-width: 0;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     overflow-wrap: normal;
     white-space: nowrap;
-    font-size: clamp(15px, 2.4vw, 20px);
+    padding: 0 2px 1px;
+    font-size: clamp(13px, 2vw, 17px);
+    line-height: 1.05;
+    text-align: center;
+    text-shadow: 0 1px 4px rgb(0 0 0 / 80%);
   }
 
   .toast {
@@ -1833,8 +2192,8 @@ const styles = `
       height: 40px;
     }
 
-    .playlist-grid {
-      grid-template-columns: 1fr;
+    .climate-actions {
+      width: min(230px, 58vw);
     }
   }
 
@@ -2023,6 +2382,19 @@ const styles = `
       height: 24px;
     }
 
+    .climate-actions button {
+      font-size: 13px;
+    }
+
+    .climate-actions {
+      width: min(204px, 58vw);
+    }
+
+    .climate-actions button {
+      min-height: 32px;
+      padding: 0 6px;
+    }
+
     .now-playing {
       padding: 10px 12px;
     }
@@ -2058,22 +2430,23 @@ const styles = `
       height: 6px;
     }
 
-    .idle-media {
-      padding: 10px 12px;
-    }
-
     .playlist-grid {
       gap: 6px;
       margin-top: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(clamp(64px, 22%, 220px), 1fr));
+    }
+
+    .idle-media.playlist-grid {
+      margin-top: 0;
     }
 
     .idle-media .playlist-button {
-      min-height: 34px;
-      padding: 5px 8px;
+      aspect-ratio: 1 / 1;
+      padding: 5px 5px 11px;
     }
 
     .idle-media .playlist-button span {
-      font-size: 14px;
+      font-size: 13px;
     }
   }
 `;

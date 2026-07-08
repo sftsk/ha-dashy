@@ -17,11 +17,24 @@ type MediaDisplayMode =
       buttons: PlaylistButtonConfig[];
     };
 
+const SONOS_ACTIVE_WINDOW_MS = 60 * 60 * 1000;
+const INACTIVE_MEDIA_STATES = new Set([
+  "idle",
+  "off",
+  "standby",
+  "unknown",
+  "unavailable",
+]);
+
 export class MediaActivityTracker {
   private readonly lastActive = new Map<string, number>();
   private readonly wasPlaying = new Map<string, boolean>();
 
-  update(players: MediaPlayerConfig[], hass: HassLike | undefined, now = Date.now()): void {
+  update(
+    players: MediaPlayerConfig[],
+    hass: HassLike | undefined,
+    now = Date.now(),
+  ): void {
     for (const player of players) {
       const isPlaying = hass?.states[player.entity]?.state === "playing";
       const previouslyPlaying = this.wasPlaying.get(player.entity) === true;
@@ -38,8 +51,21 @@ export class MediaActivityTracker {
     }
   }
 
-  selected(players: MediaPlayerConfig[], hass: HassLike | undefined): MediaPlayerConfig | null {
-    const active = players.filter((player) => hass?.states[player.entity]?.state === "playing");
+  lastActiveAt(entityId: string): number | undefined {
+    return this.lastActive.get(entityId);
+  }
+
+  selected(
+    players: MediaPlayerConfig[],
+    hass: HassLike | undefined,
+  ): MediaPlayerConfig | null {
+    const active = players.filter((player) => {
+      const entity = hass?.states[player.entity];
+      return isSelectableMediaSession(
+        entity,
+        this.lastActive.has(player.entity),
+      );
+    });
     if (active.length === 0) {
       return null;
     }
@@ -66,6 +92,16 @@ export class MediaActivityTracker {
 export type SonosFavorite = {
   id: string;
   title: string;
+  art?: string;
+};
+
+type MediaBrowserItem = {
+  title?: unknown;
+  media_content_type?: unknown;
+  media_content_id?: unknown;
+  thumbnail?: unknown;
+  children?: unknown;
+  can_expand?: unknown;
 };
 
 export function getMediaDisplayMode(
@@ -73,6 +109,7 @@ export function getMediaDisplayMode(
   tracker: MediaActivityTracker,
   hass: HassLike | undefined,
 ): MediaDisplayMode {
+  const now = Date.now();
   const sonosPlayer = mediaConfig.sonos
     ? mediaConfig.players.find(
         (player) => player.entity === mediaConfig.sonos?.playerEntity,
@@ -85,6 +122,11 @@ export function getMediaDisplayMode(
   if (
     sonosPlayer &&
     isSonosMusicSession(sonosEntity) &&
+    isRecentSonosSession(
+      sonosEntity,
+      tracker.lastActiveAt(sonosPlayer.entity),
+      now,
+    ) &&
     !isIgnoredSonosPlayback(sonosEntity, mediaConfig.sonos)
   ) {
     return { kind: "player", player: sonosPlayer };
@@ -96,7 +138,15 @@ export function getMediaDisplayMode(
     }
 
     const entity = hass?.states[player.entity];
-    return entity ? !isIgnoredSonosPlayback(entity, mediaConfig.sonos) : true;
+    return entity
+      ? isSonosMusicSession(entity) &&
+          isRecentSonosSession(
+            entity,
+            tracker.lastActiveAt(player.entity),
+            now,
+          ) &&
+          !isIgnoredSonosPlayback(entity, mediaConfig.sonos)
+      : true;
   });
   const player = tracker.selected(selectablePlayers, hass);
   if (player) {
@@ -113,7 +163,7 @@ export function getMediaDisplayMode(
 
   return {
     kind: "idle",
-    buttons: mediaConfig.idlePlaylistButtons,
+    buttons: [],
   };
 }
 
@@ -121,7 +171,7 @@ export function parseSonosFavorites(
   hass: HassLike | undefined,
   sensorEntity: string,
 ): SonosFavorite[] {
-  const items = hass?.states[sensorEntity]?.attributes.items;
+  const items = favoriteItems(hass?.states[sensorEntity]?.attributes);
   if (!items || typeof items !== "object") {
     return [];
   }
@@ -132,13 +182,7 @@ export function parseSonosFavorites(
         if (!item || typeof item !== "object") {
           return null;
         }
-        const record = item as Record<string, unknown>;
-        const id = stringValue(record.id) ?? stringValue(record.media_content_id);
-        const title =
-          stringValue(record.title) ??
-          stringValue(record.name) ??
-          stringValue(record.label);
-        return id && title ? { id, title } : null;
+        return favoriteFromRecord(item as Record<string, unknown>);
       })
       .filter((favorite): favorite is SonosFavorite => favorite !== null);
   }
@@ -153,12 +197,7 @@ export function parseSonosFavorites(
         return null;
       }
 
-      const record = value as Record<string, unknown>;
-      const title =
-        stringValue(record.title) ??
-        stringValue(record.name) ??
-        stringValue(record.label);
-      return title ? { id, title } : null;
+      return favoriteFromRecord(value as Record<string, unknown>, id);
     })
     .filter((favorite): favorite is SonosFavorite => favorite !== null);
 }
@@ -216,7 +255,7 @@ export function sonosFavoriteButtons(
   }
 
   return parseSonosFavorites(hass, sonos.favoritesSensorEntity)
-    .slice(0, limit)
+    .slice(0, Math.min(limit, 5))
     .map((favorite) => sonosFavoriteButton(favorite, sonos.playerEntity));
 }
 
@@ -227,6 +266,7 @@ export function sonosFavoriteButton(
   return {
     label: favorite.title,
     icon: "playlist",
+    ...(favorite.art ? { art: favorite.art } : {}),
     service: {
       domain: "media_player",
       service: "play_media",
@@ -241,8 +281,301 @@ export function sonosFavoriteButton(
   };
 }
 
+export async function browseSonosFavoriteArtwork(
+  hass: HassLike | undefined,
+  playerEntity: string,
+): Promise<Map<string, string>> {
+  const artwork = new Map<string, string>();
+  if (!hass?.callWS) {
+    return artwork;
+  }
+
+  const root = await browseMediaPlayer(hass, playerEntity);
+  const rootItem = mediaBrowserItem(root);
+  if (!rootItem) {
+    return artwork;
+  }
+
+  collectArtwork(rootItem, artwork);
+
+  const favoritesNode =
+    mediaContentType(rootItem) === "favorites"
+      ? rootItem
+      : findChild(rootItem, (child) => mediaContentType(child) === "favorites");
+  if (!favoritesNode) {
+    collectChildrenArtwork(rootItem, artwork);
+    return artwork;
+  }
+
+  const favorites =
+    favoritesNode === rootItem && childItems(rootItem).length > 0
+      ? favoritesNode
+      : mediaBrowserItem(
+          await browseMediaPlayer(
+            hass,
+            playerEntity,
+            mediaContentId(favoritesNode) ?? "",
+            mediaContentType(favoritesNode) ?? "favorites",
+          ),
+        ) ?? favoritesNode;
+
+  collectArtwork(favorites, artwork);
+  collectChildrenArtwork(favorites, artwork);
+
+  const favoriteFolders = childItems(favorites).filter(
+    (child) =>
+      mediaContentType(child) === "favorites_folder" ||
+      (child.can_expand === true && mediaContentId(child) !== undefined),
+  );
+
+  for (const folder of favoriteFolders) {
+    const folderId = mediaContentId(folder);
+    const folderType = mediaContentType(folder);
+    if (folderId === undefined || folderType === undefined) {
+      continue;
+    }
+
+    const folderPayload = mediaBrowserItem(
+      await browseMediaPlayer(hass, playerEntity, folderId, folderType),
+    );
+    if (!folderPayload) {
+      continue;
+    }
+
+    collectArtwork(folderPayload, artwork);
+    collectChildrenArtwork(folderPayload, artwork);
+  }
+
+  return artwork;
+}
+
+export function sonosArtworkLookupKey(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+async function browseMediaPlayer(
+  hass: HassLike,
+  entityId: string,
+  mediaContentId?: string,
+  mediaContentType?: string,
+): Promise<unknown> {
+  const message: Record<string, unknown> = {
+    type: "media_player/browse_media",
+    entity_id: entityId,
+  };
+
+  if (mediaContentId !== undefined) {
+    message.media_content_id = mediaContentId;
+  }
+  if (mediaContentType !== undefined) {
+    message.media_content_type = mediaContentType;
+  }
+
+  return hass.callWS?.(message);
+}
+
+function collectChildrenArtwork(
+  item: MediaBrowserItem,
+  artwork: Map<string, string>,
+): void {
+  for (const child of childItems(item)) {
+    collectArtwork(child, artwork);
+  }
+}
+
+function collectArtwork(
+  item: MediaBrowserItem,
+  artwork: Map<string, string>,
+): void {
+  const thumbnail = artValue(item.thumbnail);
+  if (!thumbnail) {
+    return;
+  }
+
+  const id = mediaContentId(item);
+  const title = stringValue(item.title);
+  if (id) {
+    artwork.set(id, thumbnail);
+  }
+  if (title) {
+    artwork.set(sonosArtworkLookupKey(title), thumbnail);
+  }
+}
+
+function findChild(
+  item: MediaBrowserItem,
+  predicate: (child: MediaBrowserItem) => boolean,
+): MediaBrowserItem | undefined {
+  return childItems(item).find(predicate);
+}
+
+function childItems(item: MediaBrowserItem): MediaBrowserItem[] {
+  return Array.isArray(item.children)
+    ? item.children
+        .map((child) => mediaBrowserItem(child))
+        .filter((child): child is MediaBrowserItem => child !== undefined)
+    : [];
+}
+
+function mediaBrowserItem(value: unknown): MediaBrowserItem | undefined {
+  return value && typeof value === "object"
+    ? (value as MediaBrowserItem)
+    : undefined;
+}
+
+function mediaContentId(item: MediaBrowserItem): string | undefined {
+  return stringValue(item.media_content_id);
+}
+
+function mediaContentType(item: MediaBrowserItem): string | undefined {
+  return stringValue(item.media_content_type);
+}
+
 function isSonosMusicSession(entity: HassEntity | undefined): entity is HassEntity {
-  return entity?.state === "playing" || entity?.state === "paused";
+  return Boolean(
+    entity &&
+      !isStandbyMediaSession(entity) &&
+      (entity.state === "playing" || entity.state === "paused"),
+  );
+}
+
+function isSelectableMediaSession(
+  entity: HassEntity | undefined,
+  hasPriorActivity: boolean,
+): boolean {
+  if (!entity || isStandbyMediaSession(entity)) {
+    return false;
+  }
+
+  return (
+    entity.state === "playing" ||
+    (entity.state === "paused" && hasPriorActivity)
+  );
+}
+
+function isRecentSonosSession(
+  entity: HassEntity,
+  trackedLastActive: number | undefined,
+  now: number,
+): boolean {
+  const entityLastActive = latestEntityActivityTime(entity);
+  const lastActive =
+    trackedLastActive === undefined
+      ? entityLastActive
+      : Math.max(trackedLastActive, entityLastActive ?? trackedLastActive);
+
+  return lastActive === undefined || now - lastActive <= SONOS_ACTIVE_WINDOW_MS;
+}
+
+function latestEntityActivityTime(entity: HassEntity): number | undefined {
+  const timestamps = [
+    entity.attributes.media_position_updated_at,
+    entity.last_updated,
+    entity.last_changed,
+  ]
+    .map((value) => timestampValue(value))
+    .filter((value): value is number => value !== undefined);
+
+  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
+}
+
+function timestampValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function isStandbyMediaSession(entity: HassEntity): boolean {
+  if (INACTIVE_MEDIA_STATES.has(entity.state.toLocaleLowerCase())) {
+    return true;
+  }
+
+  return (
+    isStandbyLabel(entity.attributes.app_name) ||
+    isStandbyLabel(entity.attributes.source)
+  );
+}
+
+function isStandbyLabel(value: unknown): boolean {
+  return stringValue(value)?.trim().toLocaleLowerCase() === "standby";
+}
+
+function favoriteItems(
+  attrs: Record<string, unknown> | undefined,
+): object | undefined {
+  if (!attrs) {
+    return undefined;
+  }
+
+  return objectValue(attrs.items) ?? objectValue(attrs.favorites);
+}
+
+function favoriteFromRecord(
+  record: Record<string, unknown>,
+  fallbackId?: string,
+): SonosFavorite | null {
+  const id =
+    stringValue(record.id) ??
+    stringValue(record.media_content_id) ??
+    stringValue(record.favorite_id) ??
+    stringValue(record.item_id) ??
+    fallbackId;
+  const title =
+    stringValue(record.title) ??
+    stringValue(record.name) ??
+    stringValue(record.label);
+  const art = favoriteArt(record);
+  return id && title ? { id, title, ...(art ? { art } : {}) } : null;
+}
+
+function favoriteArt(record: Record<string, unknown>): string | undefined {
+  return (
+    artValue(record.art) ??
+    artValue(record.coverArt) ??
+    artValue(record.cover_art) ??
+    artValue(record.cover) ??
+    artValue(record.thumbnail) ??
+    artValue(record.thumbnail_url) ??
+    artValue(record.image) ??
+    artValue(record.image_url) ??
+    artValue(record.entity_picture) ??
+    artValue(record.albumArt) ??
+    artValue(record.album_art) ??
+    artValue(record.picture) ??
+    artValue(record.artwork)
+  );
+}
+
+function artValue(value: unknown): string | undefined {
+  const direct = stringValue(value);
+  if (direct) {
+    return direct;
+  }
+
+  const record = objectValue(value);
+  if (!record) {
+    return undefined;
+  }
+
+  return (
+    stringValue(record.url) ??
+    stringValue(record.uri) ??
+    stringValue(record.src) ??
+    stringValue(record.path)
+  );
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

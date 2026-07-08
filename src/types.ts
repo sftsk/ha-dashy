@@ -15,6 +15,7 @@ export type HassLike = {
     service: string,
     data?: Record<string, unknown>,
   ) => Promise<unknown>;
+  callWS?: (message: Record<string, unknown>) => Promise<unknown>;
   formatEntityState?: (stateObj: HassEntity, state?: string) => string;
   formatEntityAttributeValue?: (
     stateObj: HassEntity,
@@ -51,6 +52,18 @@ export type ControlConfig = {
   actions: ControlActions;
 };
 
+export type ClimateActions = {
+  cool?: ServiceCall;
+  cleanAir?: ServiceCall;
+  off?: ServiceCall;
+};
+
+export type ClimateConfig = {
+  label: string;
+  entity: EntityId;
+  actions: ClimateActions;
+};
+
 export type MediaPlayerConfig = {
   label: string;
   entity: EntityId;
@@ -60,6 +73,7 @@ export type MediaPlayerConfig = {
 export type PlaylistButtonConfig = {
   label: string;
   icon: string;
+  art?: string;
   service: ServiceCall;
 };
 
@@ -105,9 +119,9 @@ export type DashboardConfig = {
   sceneTiles: SceneTileConfig[];
   controls: ControlConfig[];
   badges: DashboardBadgeConfig[];
+  climate?: ClimateConfig;
   media: {
     players: MediaPlayerConfig[];
-    idlePlaylistButtons: PlaylistButtonConfig[];
     sonos?: SonosConfig;
   };
 };
