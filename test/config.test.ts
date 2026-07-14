@@ -51,8 +51,19 @@ describe("normalizeDashboardConfig", () => {
         cleanAir: {
           domain: "script",
           service: "turn_on",
+          durationSeconds: 1800,
+          stateEntity: "input_boolean.sample_clean_air",
           data: {
             entity_id: "script.sample_dry_then_fan_30m",
+          },
+        },
+        sleep: {
+          domain: "script",
+          service: "turn_on",
+          durationSeconds: 1800,
+          stateEntity: "input_boolean.sample_sleep",
+          data: {
+            entity_id: "script.sample_sleep",
           },
         },
         off: {

@@ -31,6 +31,7 @@ import type {
 const CHART_WIDTH = 620;
 const CHART_HEIGHT = 96;
 const MAX_IDLE_PLAYLIST_CARDS = 5;
+const TIMED_CLIMATE_ACTIONS = ["sleep", "cleanAir"] as const;
 
 type OptimisticMediaStart = {
   title: string;
@@ -38,6 +39,8 @@ type OptimisticMediaStart = {
   loading: boolean;
   version: number;
 };
+
+type TimedClimateAction = (typeof TIMED_CLIMATE_ACTIONS)[number];
 
 export class DashyDashboardPanel extends HTMLElement {
   private readonly view: ShadowRoot;
@@ -60,6 +63,12 @@ export class DashyDashboardPanel extends HTMLElement {
   private readonly sonosArtwork = new Map<string, string>();
   private sonosArtworkRequestKey = "";
   private sonosArtworkRequestVersion = 0;
+  private activeTimedClimateAction:
+    | {
+        action: TimedClimateAction;
+        startedAt: number;
+      }
+    | undefined;
   private pageOverflow:
     | {
         body: string;
@@ -78,10 +87,10 @@ export class DashyDashboardPanel extends HTMLElement {
     this.view.addEventListener("click", this.handleClick);
     this.updateClock();
     this.clockTimer = window.setInterval(() => this.updateClock(), 15_000);
-    this.mediaProgressTimer = window.setInterval(
-      () => this.updateMediaProgress(),
-      1_000,
-    );
+    this.mediaProgressTimer = window.setInterval(() => {
+      this.updateMediaProgress();
+      this.updateClimateProgress();
+    }, 1_000);
     this.updateAll();
     void this.refreshSonosArtwork();
   }
@@ -255,10 +264,98 @@ export class DashyDashboardPanel extends HTMLElement {
       return;
     }
 
+    if (action === "cool") {
+      if (this.isClimateCooling(climate)) {
+        this.activeTimedClimateAction = undefined;
+        await this.callClimateService(climate.actions.off, climate);
+        return;
+      }
+
+      await this.stopOtherTimedClimateScripts(climate);
+      this.activeTimedClimateAction = undefined;
+      await this.callClimateService(climate.actions.cool, climate);
+      return;
+    }
+
+    if (isTimedClimateAction(action)) {
+      if (this.isTimedClimateActionActive(climate, action)) {
+        this.activeTimedClimateAction = undefined;
+        await this.stopClimateScript(action, climate);
+        await this.stopClimateStateEntity(action, climate);
+        await this.callClimateService(climate.actions.off, climate);
+        return;
+      }
+
+      await this.stopOtherTimedClimateScripts(climate, action);
+      this.activeTimedClimateAction = {
+        action,
+        startedAt: Date.now(),
+      };
+      await this.callClimateService(climate.actions[action], climate);
+      return;
+    }
+
     const serviceCall = climate.actions[action as keyof ClimateConfig["actions"]];
+    await this.callClimateService(serviceCall, climate);
+  }
+
+  private async callClimateService(
+    serviceCall: ServiceCall | undefined,
+    climate: ClimateConfig,
+  ): Promise<void> {
     await this.callServiceWithOptimism(
       serviceCall,
       serviceCall?.domain === "climate" ? climate.entity : undefined,
+    );
+  }
+
+  private async stopClimateScript(
+    action: TimedClimateAction,
+    climate: ClimateConfig,
+  ): Promise<void> {
+    const entityId = scriptEntityId(climate.actions[action]);
+    if (!entityId) {
+      return;
+    }
+
+    await this.callServiceWithOptimism(
+      {
+        domain: "script",
+        service: "turn_off",
+        data: { entity_id: entityId },
+      },
+      entityId,
+    );
+  }
+
+  private async stopOtherTimedClimateScripts(
+    climate: ClimateConfig,
+    except?: TimedClimateAction,
+  ): Promise<void> {
+    for (const action of TIMED_CLIMATE_ACTIONS) {
+      if (action !== except && this.isTimedClimateActionActive(climate, action)) {
+        await this.stopClimateScript(action, climate);
+        await this.stopClimateStateEntity(action, climate);
+      }
+    }
+
+    if (this.activeTimedClimateAction?.action !== except) {
+      this.activeTimedClimateAction = undefined;
+    }
+  }
+
+  private async stopClimateStateEntity(
+    action: TimedClimateAction,
+    climate: ClimateConfig,
+  ): Promise<void> {
+    const entityId = stateEntityId(climate.actions[action]);
+    if (!entityId || this.entity(entityId)?.state !== "on") {
+      return;
+    }
+
+    await this.callServiceWithOptimism(
+      serviceForToggleEntityOff(entityId),
+      entityId,
     );
   }
 
@@ -821,11 +918,9 @@ export class DashyDashboardPanel extends HTMLElement {
   }
 
   private renderClimateControl(climate: ClimateConfig): string {
-    const entity = this.entity(climate.entity);
-    const state = entity?.state ?? "unavailable";
-    const isCool = state === "cool";
-    const isClean = state === "dry" || state === "fan_only";
-    const isOff = state === "off";
+    const isCool = this.isClimateCooling(climate);
+    const isSleep = this.isTimedClimateActionActive(climate, "sleep");
+    const isClean = this.isTimedClimateActionActive(climate, "cleanAir");
 
     return `<div class="control-row climate-row">
       <div class="control-icon">${iconSvg("thermometer", "control-symbol")}</div>
@@ -833,11 +928,129 @@ export class DashyDashboardPanel extends HTMLElement {
         <div>${escapeHtml(climate.label)}</div>
       </div>
       <div class="control-actions climate-actions" role="group" aria-label="${escapeHtml(climate.label)} mode">
-        <button class="${isCool ? "is-active" : ""}" data-dashy-action="climate-cool" type="button" aria-pressed="${isCool}">Cool</button>
-        <button class="${isClean ? "is-active" : ""}" data-dashy-action="climate-cleanAir" type="button" aria-pressed="${isClean}">Clean</button>
-        <button class="${isOff ? "is-active" : ""}" data-dashy-action="climate-off" type="button" aria-pressed="${isOff}">Off</button>
+        ${this.renderClimateActionButton("cool", "snowflake", isCool, isCool ? `Turn ${climate.label} off` : `Cool ${climate.label}`)}
+        ${this.renderClimateActionButton("sleep", "moon", isSleep, isSleep ? `Turn ${climate.label} sleep off` : `Sleep ${climate.label}`, this.timedClimateProgressPercent(climate, "sleep"))}
+        ${this.renderClimateActionButton("cleanAir", "fan", isClean, isClean ? `Turn ${climate.label} clean off` : `Clean ${climate.label}`, this.timedClimateProgressPercent(climate, "cleanAir"))}
       </div>
     </div>`;
+  }
+
+  private renderClimateActionButton(
+    action: "cool" | TimedClimateAction,
+    icon: string,
+    active: boolean,
+    label: string,
+    progressPercent?: number,
+  ): string {
+    const progress = progressPercent ?? 0;
+    const classes = [
+      "climate-action-button",
+      active ? "is-active" : "",
+      progressPercent !== undefined ? "has-progress" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return `<button class="${classes}" data-dashy-action="climate-${action}" type="button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}" aria-pressed="${active}" style="--progress: ${Math.round(progress * 3.6)}deg">${iconSvg(icon, "climate-icon")}</button>`;
+  }
+
+  private isClimateCooling(climate: ClimateConfig): boolean {
+    return (
+      this.entity(climate.entity)?.state === "cool" &&
+      !this.hasActiveTimedClimateAction(climate)
+    );
+  }
+
+  private hasActiveTimedClimateAction(climate: ClimateConfig): boolean {
+    return TIMED_CLIMATE_ACTIONS.some((action) =>
+      this.isTimedClimateActionActive(climate, action),
+    );
+  }
+
+  private isTimedClimateActionActive(
+    climate: ClimateConfig,
+    action: TimedClimateAction,
+  ): boolean {
+    const stateEntity = stateEntityId(climate.actions[action]);
+    if (stateEntity && this.entity(stateEntity)?.state === "on") {
+      return true;
+    }
+
+    if (this.isLocalTimedClimateActionActive(climate, action)) {
+      return true;
+    }
+
+    const scriptId = scriptEntityId(climate.actions[action]);
+    const scriptState = scriptId ? this.entity(scriptId)?.state : undefined;
+    if (scriptState === "on") {
+      return true;
+    }
+
+    if (action === "cleanAir") {
+      const climateState = this.entity(climate.entity)?.state;
+      return climateState === "dry" || climateState === "fan_only";
+    }
+
+    return false;
+  }
+
+  private isLocalTimedClimateActionActive(
+    climate: ClimateConfig,
+    action: TimedClimateAction,
+  ): boolean {
+    const active = this.activeTimedClimateAction;
+    if (active?.action !== action) {
+      return false;
+    }
+
+    const duration = timedClimateDuration(climate.actions[action]);
+    if (duration === undefined) {
+      return true;
+    }
+
+    const isActive = Date.now() - active.startedAt < duration * 1_000;
+    if (!isActive) {
+      this.activeTimedClimateAction = undefined;
+    }
+
+    return isActive;
+  }
+
+  private timedClimateProgressPercent(
+    climate: ClimateConfig,
+    action: TimedClimateAction,
+  ): number | undefined {
+    const serviceCall = climate.actions[action];
+    const scriptId = scriptEntityId(serviceCall);
+    const script = scriptId ? this.entity(scriptId) : undefined;
+    const stateEntity = stateEntityId(serviceCall);
+    const state = stateEntity ? this.entity(stateEntity) : undefined;
+    const duration = timedClimateDuration(serviceCall);
+    if (duration === undefined) {
+      return undefined;
+    }
+
+    const localStart =
+      this.activeTimedClimateAction?.action === action
+        ? this.activeTimedClimateAction.startedAt
+        : undefined;
+    const start =
+      script?.state === "on"
+        ? timestampMs(script.attributes.last_triggered) ??
+          timestampMs(script.last_changed) ??
+          timestampMs(script.last_updated) ??
+          localStart
+        : state?.state === "on"
+          ? timestampMs(state.last_changed) ??
+            timestampMs(state.last_updated) ??
+            localStart
+        : localStart;
+    if (start === undefined) {
+      return undefined;
+    }
+
+    const elapsed = Math.max(0, (Date.now() - start) / 1_000);
+    return Math.max(0, Math.min(100, 100 - (elapsed / duration) * 100));
   }
 
   private async refreshSonosArtwork(): Promise<void> {
@@ -1101,6 +1314,41 @@ export class DashyDashboardPanel extends HTMLElement {
     )}%`;
   }
 
+  private updateClimateProgress(): void {
+    const climate = this.config.climate;
+    if (!climate) {
+      return;
+    }
+
+    const coolButton = this.view.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-cool"]',
+    );
+    if (coolButton) {
+      const active = this.isClimateCooling(climate);
+      coolButton.classList.toggle("is-active", active);
+      coolButton.setAttribute("aria-pressed", String(active));
+    }
+
+    for (const action of TIMED_CLIMATE_ACTIONS) {
+      const button = this.view.querySelector<HTMLButtonElement>(
+        `[data-dashy-action="climate-${action}"]`,
+      );
+      if (!button) {
+        continue;
+      }
+
+      const active = this.isTimedClimateActionActive(climate, action);
+      const progress = this.timedClimateProgressPercent(climate, action);
+      button.classList.toggle("is-active", active);
+      button.classList.toggle("has-progress", progress !== undefined);
+      button.setAttribute("aria-pressed", String(active));
+      button.style.setProperty(
+        "--progress",
+        `${Math.round((progress ?? 0) * 3.6)}deg`,
+      );
+    }
+  }
+
   private sampleEnvironment(): void {
     const temperature = parseStateNumber(
       this.entity(this.config.environment.temperatureEntity),
@@ -1226,6 +1474,41 @@ function isCoverClosedState(state: string | undefined): boolean {
 
 function stringEntityId(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function scriptEntityId(serviceCall: ServiceCall | undefined): string | undefined {
+  const entityId = stringEntityId(serviceCall?.data?.entity_id);
+  return entityId?.startsWith("script.") ? entityId : undefined;
+}
+
+function stateEntityId(serviceCall: ServiceCall | undefined): string | undefined {
+  return stringEntityId(serviceCall?.stateEntity);
+}
+
+function serviceForToggleEntityOff(entityId: string): ServiceCall {
+  const domain = entityId.split(".")[0] ?? "";
+  if (domain === "input_boolean" || domain === "switch" || domain === "light") {
+    return {
+      domain,
+      service: "turn_off",
+      data: { entity_id: entityId },
+    };
+  }
+
+  return {
+    domain: "homeassistant",
+    service: "turn_off",
+    data: { entity_id: entityId },
+  };
+}
+
+function timedClimateDuration(serviceCall: ServiceCall | undefined): number | undefined {
+  const duration = Number(serviceCall?.durationSeconds);
+  return Number.isFinite(duration) && duration > 0 ? duration : undefined;
+}
+
+function isTimedClimateAction(action: string): action is TimedClimateAction {
+  return TIMED_CLIMATE_ACTIONS.includes(action as TimedClimateAction);
 }
 
 function optimisticMediaTitle(
@@ -1727,46 +2010,69 @@ const styles = `
   }
 
   .climate-actions {
-    width: min(240px, 58vw);
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0;
-    overflow: hidden;
-    border: 1px solid #4b4b50;
-    border-radius: 999px;
-    background: #252529;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
   }
 
   .control-actions.climate-actions {
-    gap: 0;
+    gap: 10px;
   }
 
-  .climate-actions button {
-    min-width: 0;
-    min-height: 38px;
-    padding: 0 12px;
-    border-radius: 0;
-    background: transparent;
+  .climate-action-button {
+    --progress: 0deg;
+    position: relative;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: #4b4b50;
     color: #f0f0f2;
-    font-size: clamp(14px, 2.1vw, 17px);
-    line-height: 1;
-    white-space: nowrap;
+    isolation: isolate;
   }
 
-  .climate-actions button + button {
-    border-left: 1px solid #4b4b50;
+  .climate-action-button::before {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    z-index: 0;
+    border-radius: inherit;
+    background: #252529;
   }
 
-  .climate-actions button.is-active {
+  .climate-action-button.has-progress {
+    background: conic-gradient(#4b4b50 calc(360deg - var(--progress)), #5da2ff 0);
+  }
+
+  .climate-action-button.is-active {
+    background: #8b5cf6;
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+  }
+
+  .climate-action-button.is-active.has-progress {
+    background: conic-gradient(#4b4b50 calc(360deg - var(--progress)), #8b5cf6 0);
+  }
+
+  .climate-action-button.is-active::before {
     background: #375eea;
     color: #fff;
     box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
   }
 
-  .climate-actions button.is-active[data-dashy-action="climate-off"] {
-    background: #e5e5e7;
-    color: #1b1b1c;
-    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
+  .climate-action-button:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+
+  .climate-icon {
+    position: relative;
+    z-index: 1;
+    width: 24px;
+    height: 24px;
   }
 
   .media-card {
@@ -2192,8 +2498,9 @@ const styles = `
       height: 40px;
     }
 
-    .climate-actions {
-      width: min(230px, 58vw);
+    .climate-action-button {
+      width: 42px;
+      height: 42px;
     }
   }
 
@@ -2382,17 +2689,14 @@ const styles = `
       height: 24px;
     }
 
-    .climate-actions button {
-      font-size: 13px;
+    .climate-action-button {
+      width: 38px;
+      height: 38px;
     }
 
-    .climate-actions {
-      width: min(204px, 58vw);
-    }
-
-    .climate-actions button {
-      min-height: 32px;
-      padding: 0 6px;
+    .climate-icon {
+      width: 21px;
+      height: 21px;
     }
 
     .now-playing {

@@ -28,6 +28,8 @@ export type ServiceCall = {
   domain: string;
   service: string;
   data?: Record<string, unknown>;
+  durationSeconds?: number;
+  stateEntity?: EntityId;
 };
 
 export type SceneTileConfig = {
@@ -54,6 +56,7 @@ export type ControlConfig = {
 
 export type ClimateActions = {
   cool?: ServiceCall;
+  sleep?: ServiceCall;
   cleanAir?: ServiceCall;
   off?: ServiceCall;
 };

@@ -60,6 +60,16 @@ export function attachMockHomeAssistant(element: DashyElement): void {
       temperature: 23,
       fan_mode: "auto",
     }),
+    "script.sample_sleep": entity("script.sample_sleep", "off"),
+    "script.sample_dry_then_fan_30m": entity(
+      "script.sample_dry_then_fan_30m",
+      "off",
+    ),
+    "input_boolean.sample_sleep": entity("input_boolean.sample_sleep", "off"),
+    "input_boolean.sample_clean_air": entity(
+      "input_boolean.sample_clean_air",
+      "off",
+    ),
     "switch.sample_preset_one": entity("switch.sample_preset_one", "off"),
     "switch.sample_ambient_mode": entity("switch.sample_ambient_mode", "off"),
     "sensor.sample_favorites": entity("sensor.sample_favorites", "6", {
@@ -90,13 +100,39 @@ export function attachMockHomeAssistant(element: DashyElement): void {
       if (domain === "climate" && entityId && states[entityId]) {
         states[entityId] = climateTransition(states[entityId], service, data);
       }
+      if (domain === "input_boolean" && entityId && states[entityId]) {
+        states[entityId] = booleanTransition(states[entityId], service);
+      }
       if (domain === "script" && entityId === "script.sample_dry_then_fan_30m") {
+        states[entityId] = scriptTransition(states[entityId], service);
+        states["input_boolean.sample_clean_air"] = booleanTransition(
+          states["input_boolean.sample_clean_air"],
+          service === "turn_on" ? "turn_on" : "turn_off",
+        );
         states["climate.sample_heat_pump"] = {
           ...states["climate.sample_heat_pump"],
           state: "dry",
           attributes: {
             ...states["climate.sample_heat_pump"].attributes,
             fan_mode: "powerful",
+          },
+        };
+      }
+      if (domain === "script" && entityId === "script.sample_sleep") {
+        states[entityId] = scriptTransition(states[entityId], service);
+        states["input_boolean.sample_sleep"] = booleanTransition(
+          states["input_boolean.sample_sleep"],
+          service === "turn_on" ? "turn_on" : "turn_off",
+        );
+        states["climate.sample_heat_pump"] = {
+          ...states["climate.sample_heat_pump"],
+          state: service === "turn_off" ? states["climate.sample_heat_pump"].state : "cool",
+          attributes: {
+            ...states["climate.sample_heat_pump"].attributes,
+            temperature: 23,
+            preset_mode: "boost",
+            swing_mode: "windnice",
+            swing_horizontal_mode: "stop",
           },
         };
       }
@@ -430,6 +466,47 @@ function climateTransition(
         ...entityState.attributes,
         fan_mode: data.fan_mode,
       },
+    };
+  }
+
+  return entityState;
+}
+
+function scriptTransition(entityState: HassEntity, service: string): HassEntity {
+  if (service === "turn_on") {
+    return {
+      ...entityState,
+      state: "on",
+      attributes: {
+        ...entityState.attributes,
+        last_triggered: new Date().toISOString(),
+      },
+    };
+  }
+
+  if (service === "turn_off") {
+    return { ...entityState, state: "off" };
+  }
+
+  return entityState;
+}
+
+function booleanTransition(entityState: HassEntity, service: string): HassEntity {
+  if (service === "turn_on") {
+    return {
+      ...entityState,
+      state: "on",
+      last_changed: new Date().toISOString(),
+      last_updated: new Date().toISOString(),
+    };
+  }
+
+  if (service === "turn_off") {
+    return {
+      ...entityState,
+      state: "off",
+      last_changed: new Date().toISOString(),
+      last_updated: new Date().toISOString(),
     };
   }
 

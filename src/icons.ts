@@ -23,8 +23,12 @@ const ICONS: Record<string, string> = {
     '<rect x="5" y="3.5" width="14" height="17" rx="2" fill="currentColor"/><circle cx="12" cy="12.5" r="4.4" fill="#0d0d0e"/><path d="M10 12.5c1.4-1.2 2.6 1.2 4 0" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="6.7" r="1" fill="#0d0d0e"/><circle cx="11" cy="6.7" r="1" fill="#0d0d0e"/>',
   droplet:
     '<path d="M12 3s7 7.2 7 12a7 7 0 0 1-14 0c0-4.8 7-12 7-12z" fill="currentColor"/><path d="M9 16c1.5 2 4.5 2 6 0" fill="none" stroke="#0d0d0e" stroke-width="1.6" stroke-linecap="round"/>',
+  fan:
+    '<circle cx="12" cy="12" r="1.8" fill="currentColor"/><path d="M12 10.2c-1.1-2.2-.2-5 2.2-6 1.2-.5 2.5-.2 3.2.9 1.1 1.8-.3 4.2-2.5 5.1-.9.4-1.8.4-2.9 0zM13.6 12.9c2.5-.1 4.8 1.7 5.1 4.2.1 1.3-.6 2.4-1.8 2.7-2.1.5-3.8-1.8-4.1-4.1-.1-1 .1-1.9.8-2.8zM10.4 12.9c-1.4 2.1-4.1 3-6.2 1.7-1.1-.7-1.5-1.9-1-3.1.8-2 3.7-2.1 5.6-.8.8.6 1.3 1.3 1.6 2.2z" fill="currentColor"/>',
   more:
     '<circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/>',
+  moon:
+    '<path d="M18.6 15.3A7.5 7.5 0 0 1 8.7 5.4 7.5 7.5 0 1 0 18.6 15.3z" fill="currentColor"/>',
   mug:
     '<path d="M6 7h10v10H6z" fill="currentColor"/><path d="M16 9h2.2a2.8 2.8 0 0 1 0 5.6H16" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 5c0-1 1-1 1-2m3 2c0-1 1-1 1-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   music:
@@ -51,6 +55,8 @@ const ICONS: Record<string, string> = {
     '<path d="M6 11h12v3H6zM7 14h10v5H7z" fill="currentColor"/><path d="M7 10c1-3 4-4 8-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
   skip:
     '<path d="M5 5v14l10-7zM17 5h2v14h-2z" fill="currentColor"/>',
+  snowflake:
+    '<path d="M12 3v18M5.6 6.2l12.8 11.6M18.4 6.2 5.6 17.8M7.8 4.8 12 8l4.2-3.2M7.8 19.2 12 16l4.2 3.2M3.5 12h17M5.8 9.2 9 12l-3.2 2.8M18.2 9.2 15 12l3.2 2.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
   stop:
     '<path d="M8 8h8v8H8z" fill="currentColor"/>',
   string:

@@ -54,6 +54,26 @@ function baseHass(callService = vi.fn()): HassLike {
           fan_mode: "auto",
         },
       },
+      "script.sample_sleep": {
+        entity_id: "script.sample_sleep",
+        state: "off",
+        attributes: {},
+      },
+      "script.sample_dry_then_fan_30m": {
+        entity_id: "script.sample_dry_then_fan_30m",
+        state: "off",
+        attributes: {},
+      },
+      "input_boolean.sample_sleep": {
+        entity_id: "input_boolean.sample_sleep",
+        state: "off",
+        attributes: {},
+      },
+      "input_boolean.sample_clean_air": {
+        entity_id: "input_boolean.sample_clean_air",
+        state: "off",
+        attributes: {},
+      },
     },
     callService,
   };
@@ -1169,7 +1189,7 @@ describe("dashy-dashboard-panel", () => {
     expect(styles).not.toContain("#4b83b7");
   });
 
-  it("renders climate as a configured-label three-way toggle in device controls and calls each service", async () => {
+  it("renders climate as three round icon toggles in device controls and calls each service", async () => {
     const callService = vi.fn().mockResolvedValue(undefined);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
@@ -1187,62 +1207,97 @@ describe("dashy-dashboard-panel", () => {
     const climateActions = element.shadowRoot?.querySelector(".climate-actions");
     const climateButtons = Array.from(
       element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
-        ".climate-actions button",
+        ".climate-action-button",
       ) ?? [],
     );
-    const [coolButton, cleanAirButton, offButton] = climateButtons;
+    const [coolButton, sleepButton] = climateButtons;
 
     expect(climateRow?.closest(".controls-card")).toBe(controlsCard);
     expect(climateRow?.closest('[data-region="controls"]')).toBe(controls);
     expect(climateRow?.textContent?.replace(/\s+/g, " ").trim()).toBe(
-      "Coolio Cool Clean Off",
+      "Coolio",
     );
     expect(element.shadowRoot?.querySelector(".climate-card")).toBeNull();
     expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
     expect(climateActions?.getAttribute("role")).toBe("group");
     expect(climateActions?.getAttribute("aria-label")).toBe("Coolio mode");
-    expect(climateButtons.map((button) => button.textContent?.trim())).toEqual([
-      "Cool",
-      "Clean",
-      "Off",
+    expect(climateButtons.map((button) => button.dataset.dashyAction)).toEqual([
+      "climate-cool",
+      "climate-sleep",
+      "climate-cleanAir",
+    ]);
+    expect(climateButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Cool Coolio",
+      "Sleep Coolio",
+      "Clean Coolio",
     ]);
     expect(climateButtons.map((button) => button.getAttribute("aria-pressed"))).toEqual([
       "false",
       "false",
-      "true",
+      "false",
     ]);
+    expect(climateButtons.every((button) => button.querySelector(".climate-icon"))).toBe(
+      true,
+    );
     expect(controls?.compareDocumentPosition(media as Node)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
 
     coolButton?.click();
     await Promise.resolve();
-    cleanAirButton?.click();
+    sleepButton?.click();
     await Promise.resolve();
-    offButton?.click();
-    await Promise.resolve();
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-cleanAir"]')
+      ?.click();
+    await flushPromises();
 
     expect(callService).toHaveBeenCalledWith("script", "turn_on", {
       entity_id: "script.sample_cool_23",
     });
     expect(callService).toHaveBeenCalledWith("script", "turn_on", {
-      entity_id: "script.sample_dry_then_fan_30m",
+      entity_id: "script.sample_sleep",
     });
-    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
-      entity_id: "climate.sample_heat_pump",
+    expect(callService).toHaveBeenCalledWith("script", "turn_on", {
+      entity_id: "script.sample_dry_then_fan_30m",
     });
   });
 
   it("marks the active climate toggle segment", () => {
-    const cases: Array<[string, string[]]> = [
-      ["cool", ["true", "false", "false"]],
-      ["dry", ["false", "true", "false"]],
-      ["fan_only", ["false", "true", "false"]],
-      ["off", ["false", "false", "true"]],
-      ["unknown", ["false", "false", "false"]],
+    const cases: Array<{
+      state: string;
+      scripts?: Record<string, string>;
+      helpers?: Record<string, string>;
+      pressedStates: string[];
+    }> = [
+      { state: "cool", pressedStates: ["true", "false", "false"] },
+      { state: "dry", pressedStates: ["false", "false", "true"] },
+      { state: "fan_only", pressedStates: ["false", "false", "true"] },
+      { state: "off", pressedStates: ["false", "false", "false"] },
+      { state: "unknown", pressedStates: ["false", "false", "false"] },
+      {
+        state: "off",
+        scripts: { "script.sample_sleep": "on" },
+        pressedStates: ["false", "true", "false"],
+      },
+      {
+        state: "cool",
+        scripts: { "script.sample_sleep": "on" },
+        pressedStates: ["false", "true", "false"],
+      },
+      {
+        state: "cool",
+        helpers: { "input_boolean.sample_sleep": "on" },
+        pressedStates: ["false", "true", "false"],
+      },
+      {
+        state: "off",
+        helpers: { "input_boolean.sample_clean_air": "on" },
+        pressedStates: ["false", "false", "true"],
+      },
     ];
 
-    for (const [state, pressedStates] of cases) {
+    for (const { state, scripts, helpers, pressedStates } of cases) {
       document.body.innerHTML = "";
       const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
         hass: HassLike;
@@ -1252,13 +1307,25 @@ describe("dashy-dashboard-panel", () => {
         ...hass.states["climate.sample_heat_pump"],
         state,
       };
+      for (const [entityId, scriptState] of Object.entries(scripts ?? {})) {
+        hass.states[entityId] = {
+          ...hass.states[entityId],
+          state: scriptState,
+        };
+      }
+      for (const [entityId, helperState] of Object.entries(helpers ?? {})) {
+        hass.states[entityId] = {
+          ...hass.states[entityId],
+          state: helperState,
+        };
+      }
 
       document.body.append(element);
       element.hass = hass;
 
       const climateButtons = Array.from(
         element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
-          ".climate-actions button",
+          ".climate-action-button",
         ) ?? [],
       );
 
@@ -1271,7 +1338,164 @@ describe("dashy-dashboard-panel", () => {
     }
   });
 
-  it("turns the heat pump off from the active clean segment", async () => {
+  it("turns active cool and sleep actions off from their own buttons", async () => {
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass(callService);
+    hass.states["climate.sample_heat_pump"] = {
+      ...hass.states["climate.sample_heat_pump"],
+      state: "cool",
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-cool"]')
+      ?.click();
+    await flushPromises();
+
+    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
+      entity_id: "climate.sample_heat_pump",
+    });
+
+    callService.mockClear();
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "script.sample_sleep": {
+          ...hass.states["script.sample_sleep"],
+          state: "on",
+        },
+        "input_boolean.sample_sleep": {
+          ...hass.states["input_boolean.sample_sleep"],
+          state: "on",
+        },
+      },
+    };
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
+      ?.click();
+    await flushPromises();
+
+    expect(callService).toHaveBeenCalledWith("script", "turn_off", {
+      entity_id: "script.sample_sleep",
+    });
+    expect(callService).toHaveBeenCalledWith("input_boolean", "turn_off", {
+      entity_id: "input_boolean.sample_sleep",
+    });
+    expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
+      entity_id: "climate.sample_heat_pump",
+    });
+  });
+
+  it("shows circular countdown progress on running timed climate scripts", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T10:15:00.000Z"));
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass();
+    hass.states["script.sample_sleep"] = {
+      ...hass.states["script.sample_sleep"],
+      state: "on",
+      attributes: {
+        last_triggered: "2026-07-14T10:00:00.000Z",
+      },
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    const sleepButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-sleep"]',
+    );
+
+    expect(sleepButton?.classList.contains("is-active")).toBe(true);
+    expect(sleepButton?.classList.contains("has-progress")).toBe(true);
+    expect(sleepButton?.style.getPropertyValue("--progress")).toBe("180deg");
+
+    vi.advanceTimersByTime(5 * 60 * 1_000);
+
+    expect(sleepButton?.style.getPropertyValue("--progress")).toBe("120deg");
+  });
+
+  it("uses the timed climate state helper timestamp for progress", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T10:15:00.000Z"));
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass();
+    hass.states["input_boolean.sample_sleep"] = {
+      ...hass.states["input_boolean.sample_sleep"],
+      state: "on",
+      last_changed: "2026-07-14T10:00:00.000Z",
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    const sleepButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[data-dashy-action="climate-sleep"]',
+    );
+
+    expect(sleepButton?.classList.contains("is-active")).toBe(true);
+    expect(sleepButton?.style.getPropertyValue("--progress")).toBe("180deg");
+  });
+
+  it("keeps sleep active locally when the climate switches to cool before script state updates", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T10:00:00.000Z"));
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass(callService);
+    delete hass.states["script.sample_sleep"];
+
+    document.body.append(element);
+    element.hass = hass;
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
+      ?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "climate.sample_heat_pump": {
+          ...hass.states["climate.sample_heat_pump"],
+          state: "cool",
+        },
+      },
+    };
+
+    const climateButtons = Array.from(
+      element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+        ".climate-action-button",
+      ) ?? [],
+    );
+    const [coolButton, sleepButton] = climateButtons;
+
+    expect(coolButton?.getAttribute("aria-pressed")).toBe("false");
+    expect(sleepButton?.getAttribute("aria-pressed")).toBe("true");
+    expect(sleepButton?.classList.contains("has-progress")).toBe(true);
+    expect(sleepButton?.style.getPropertyValue("--progress")).toBe("360deg");
+
+    vi.advanceTimersByTime(15 * 60 * 1_000);
+
+    expect(sleepButton?.style.getPropertyValue("--progress")).toBe("180deg");
+  });
+
+  it("turns the heat pump and active clean script off from the clean button", async () => {
     const callService = vi.fn().mockResolvedValue(undefined);
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
       hass: HassLike;
@@ -1291,10 +1515,6 @@ describe("dashy-dashboard-panel", () => {
     element.hass = hass;
 
     const climateRow = element.shadowRoot?.querySelector(".climate-row");
-    const offButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
-      '[data-dashy-action="climate-off"]',
-    );
-
     const cleanAirButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
       '[data-dashy-action="climate-cleanAir"]',
     );
@@ -1303,13 +1523,14 @@ describe("dashy-dashboard-panel", () => {
     expect(climateRow?.textContent).not.toContain("Fan Only");
     expect(element.shadowRoot?.querySelector(".climate-state")).toBeNull();
     expect(cleanAirButton?.classList.contains("is-active")).toBe(true);
-    expect(offButton).not.toBeNull();
-    expect(offButton?.textContent?.trim()).toBe("Off");
-    expect(offButton?.getAttribute("aria-pressed")).toBe("false");
+    expect(cleanAirButton?.getAttribute("aria-pressed")).toBe("true");
 
-    offButton?.click();
-    await Promise.resolve();
+    cleanAirButton?.click();
+    await flushPromises();
 
+    expect(callService).toHaveBeenCalledWith("script", "turn_off", {
+      entity_id: "script.sample_dry_then_fan_30m",
+    });
     expect(callService).toHaveBeenCalledWith("climate", "turn_off", {
       entity_id: "climate.sample_heat_pump",
     });
@@ -1323,13 +1544,14 @@ describe("dashy-dashboard-panel", () => {
     const styles = element.shadowRoot?.querySelector("style")?.textContent ?? "";
 
     expect(styles).toContain("grid-template-columns: 34px minmax(0, 1fr) auto");
-    expect(styles).toContain("grid-template-columns: repeat(3, minmax(0, 1fr))");
-    expect(styles).toContain(
-      '.climate-actions button.is-active[data-dashy-action="climate-off"]',
-    );
+    expect(styles).toContain(".climate-action-button");
+    expect(styles).toContain(".climate-action-button.has-progress");
+    expect(styles).toContain("conic-gradient");
+    expect(styles).toContain("calc(360deg - var(--progress))");
     expect(styles).toContain(".control-actions.climate-actions");
-    expect(styles).toMatch(/\.climate-actions\s*{[^}]*gap:\s*0;/s);
+    expect(styles).toMatch(/\.climate-actions\s*{[^}]*gap:\s*10px;/s);
     expect(styles).toContain("gap: 10px");
+    expect(styles).not.toContain("grid-template-columns: repeat(4, minmax(0, 1fr))");
     expect(styles).not.toMatch(/\.control-actions\s*{[^}]*grid-column:\s*1 \/ -1/s);
     expect(styles).not.toContain("flex-wrap: wrap");
   });
