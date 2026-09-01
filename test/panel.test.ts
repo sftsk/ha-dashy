@@ -1210,7 +1210,7 @@ describe("dashy-dashboard-panel", () => {
         ".climate-action-button",
       ) ?? [],
     );
-    const [coolButton, sleepButton] = climateButtons;
+    const [coolButton] = climateButtons;
 
     expect(climateRow?.closest(".controls-card")).toBe(controlsCard);
     expect(climateRow?.closest('[data-region="controls"]')).toBe(controls);
@@ -1245,7 +1245,9 @@ describe("dashy-dashboard-panel", () => {
 
     coolButton?.click();
     await Promise.resolve();
-    sleepButton?.click();
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
+      ?.click();
     await Promise.resolve();
     element.shadowRoot
       ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-cleanAir"]')
@@ -1263,6 +1265,78 @@ describe("dashy-dashboard-panel", () => {
     });
   });
 
+  it("updates each climate mode optimistically, then follows Home Assistant", async () => {
+    const cases = ["cool", "sleep", "cleanAir"] as const;
+
+    for (const action of cases) {
+      document.body.innerHTML = "";
+      const request = deferred();
+      const callService = vi.fn(() => request.promise);
+      const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+        hass: HassLike;
+      };
+      document.body.append(element);
+      const hass = baseHass(callService);
+      element.hass = hass;
+
+      element.shadowRoot
+        ?.querySelector<HTMLButtonElement>(
+          `[data-dashy-action="climate-${action}"]`,
+        )
+        ?.click();
+
+      const buttons = Array.from(
+        element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+          ".climate-action-button",
+        ) ?? [],
+      );
+      const activeIndex = cases.indexOf(action);
+      expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(
+        cases.map((_, index) => String(index === activeIndex)),
+      );
+
+      request.resolve();
+      await flushPromises();
+
+      const confirmedHass: HassLike = {
+        ...hass,
+        states: {
+          ...hass.states,
+          "climate.sample_heat_pump": {
+            ...hass.states["climate.sample_heat_pump"],
+            state: action === "cleanAir" ? "dry" : "cool",
+          },
+          ...(action === "sleep"
+            ? {
+                "input_boolean.sample_sleep": {
+                  ...hass.states["input_boolean.sample_sleep"],
+                  state: "on",
+                },
+              }
+            : {}),
+          ...(action === "cleanAir"
+            ? {
+                "input_boolean.sample_clean_air": {
+                  ...hass.states["input_boolean.sample_clean_air"],
+                  state: "on",
+                },
+              }
+            : {}),
+        },
+      };
+      element.hass = confirmedHass;
+      element.hass = hass;
+
+      expect(
+        Array.from(
+          element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+            ".climate-action-button",
+          ) ?? [],
+        ).map((button) => button.getAttribute("aria-pressed")),
+      ).toEqual(["false", "false", "false"]);
+    }
+  });
+
   it("marks the active climate toggle segment", () => {
     const cases: Array<{
       state: string;
@@ -1271,19 +1345,19 @@ describe("dashy-dashboard-panel", () => {
       pressedStates: string[];
     }> = [
       { state: "cool", pressedStates: ["true", "false", "false"] },
-      { state: "dry", pressedStates: ["false", "false", "true"] },
-      { state: "fan_only", pressedStates: ["false", "false", "true"] },
+      { state: "dry", pressedStates: ["false", "false", "false"] },
+      { state: "fan_only", pressedStates: ["false", "false", "false"] },
       { state: "off", pressedStates: ["false", "false", "false"] },
       { state: "unknown", pressedStates: ["false", "false", "false"] },
       {
         state: "off",
         scripts: { "script.sample_sleep": "on" },
-        pressedStates: ["false", "true", "false"],
+        pressedStates: ["false", "false", "false"],
       },
       {
         state: "cool",
         scripts: { "script.sample_sleep": "on" },
-        pressedStates: ["false", "true", "false"],
+        pressedStates: ["true", "false", "false"],
       },
       {
         state: "cool",
@@ -1294,6 +1368,12 @@ describe("dashy-dashboard-panel", () => {
         state: "off",
         helpers: { "input_boolean.sample_clean_air": "on" },
         pressedStates: ["false", "false", "true"],
+      },
+      {
+        state: "off",
+        scripts: { "script.sample_dry_then_fan_30m": "on" },
+        helpers: { "input_boolean.sample_clean_air": "off" },
+        pressedStates: ["false", "false", "false"],
       },
     ];
 
@@ -1361,17 +1441,28 @@ describe("dashy-dashboard-panel", () => {
       entity_id: "climate.sample_heat_pump",
     });
 
-    callService.mockClear();
-    element.hass = {
+    const offHass: HassLike = {
       ...hass,
       states: {
         ...hass.states,
+        "climate.sample_heat_pump": {
+          ...hass.states["climate.sample_heat_pump"],
+          state: "off",
+        },
+      },
+    };
+    element.hass = offHass;
+    callService.mockClear();
+    element.hass = {
+      ...offHass,
+      states: {
+        ...offHass.states,
         "script.sample_sleep": {
-          ...hass.states["script.sample_sleep"],
+          ...offHass.states["script.sample_sleep"],
           state: "on",
         },
         "input_boolean.sample_sleep": {
-          ...hass.states["input_boolean.sample_sleep"],
+          ...offHass.states["input_boolean.sample_sleep"],
           state: "on",
         },
       },
@@ -1380,6 +1471,17 @@ describe("dashy-dashboard-panel", () => {
     element.shadowRoot
       ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
       ?.click();
+
+    expect(
+      element.shadowRoot
+        ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(
+      element.shadowRoot
+        ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
+        ?.classList.contains("has-progress"),
+    ).toBe(false);
     await flushPromises();
 
     expect(callService).toHaveBeenCalledWith("script", "turn_off", {
@@ -1393,7 +1495,7 @@ describe("dashy-dashboard-panel", () => {
     });
   });
 
-  it("shows circular countdown progress on running timed climate scripts", () => {
+  it("shows circular countdown progress on running timed climate actions", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-14T10:15:00.000Z"));
     const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
@@ -1406,6 +1508,11 @@ describe("dashy-dashboard-panel", () => {
       attributes: {
         last_triggered: "2026-07-14T10:00:00.000Z",
       },
+    };
+    hass.states["input_boolean.sample_sleep"] = {
+      ...hass.states["input_boolean.sample_sleep"],
+      state: "on",
+      last_changed: "2026-07-14T10:00:00.000Z",
     };
 
     document.body.append(element);
@@ -1448,7 +1555,63 @@ describe("dashy-dashboard-panel", () => {
     expect(sleepButton?.style.getPropertyValue("--progress")).toBe("180deg");
   });
 
-  it("keeps sleep active locally when the climate switches to cool before script state updates", async () => {
+  it("lets a new local timed action suppress stale helper and script state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T10:00:00.000Z"));
+    const callService = vi.fn().mockResolvedValue(undefined);
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    const hass = baseHass(callService);
+    hass.states["script.sample_dry_then_fan_30m"] = {
+      ...hass.states["script.sample_dry_then_fan_30m"],
+      state: "on",
+    };
+    hass.states["input_boolean.sample_clean_air"] = {
+      ...hass.states["input_boolean.sample_clean_air"],
+      state: "on",
+    };
+
+    document.body.append(element);
+    element.hass = hass;
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-sleep"]')
+      ?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    element.hass = {
+      ...hass,
+      states: {
+        ...hass.states,
+        "script.sample_dry_then_fan_30m": {
+          ...hass.states["script.sample_dry_then_fan_30m"],
+          state: "on",
+        },
+        "input_boolean.sample_clean_air": {
+          ...hass.states["input_boolean.sample_clean_air"],
+          state: "on",
+        },
+        "climate.sample_heat_pump": {
+          ...hass.states["climate.sample_heat_pump"],
+          state: "cool",
+        },
+      },
+    };
+
+    const climateButtons = Array.from(
+      element.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+        ".climate-action-button",
+      ) ?? [],
+    );
+
+    expect(climateButtons.map((button) => button.getAttribute("aria-pressed"))).toEqual(
+      ["false", "true", "false"],
+    );
+  });
+
+  it("keeps sleep active during HA lag, then falls back to HA state", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-14T10:00:00.000Z"));
     const callService = vi.fn().mockResolvedValue(undefined);
@@ -1490,9 +1653,41 @@ describe("dashy-dashboard-panel", () => {
     expect(sleepButton?.classList.contains("has-progress")).toBe(true);
     expect(sleepButton?.style.getPropertyValue("--progress")).toBe("360deg");
 
-    vi.advanceTimersByTime(15 * 60 * 1_000);
+    vi.advanceTimersByTime(16_000);
 
-    expect(sleepButton?.style.getPropertyValue("--progress")).toBe("180deg");
+    expect(coolButton?.getAttribute("aria-pressed")).toBe("true");
+    expect(sleepButton?.getAttribute("aria-pressed")).toBe("false");
+    expect(sleepButton?.classList.contains("has-progress")).toBe(false);
+  });
+
+  it("rolls optimistic climate state back when Home Assistant rejects the action", async () => {
+    const callService = vi.fn().mockRejectedValue(new Error("Climate unavailable"));
+    const element = document.createElement("dashy-dashboard-panel") as HTMLElement & {
+      hass: HassLike;
+    };
+    document.body.append(element);
+    element.hass = baseHass(callService);
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-cool"]')
+      ?.click();
+
+    expect(
+      element.shadowRoot
+        ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-cool"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    await flushPromises();
+
+    expect(
+      element.shadowRoot
+        ?.querySelector<HTMLButtonElement>('[data-dashy-action="climate-cool"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(element.shadowRoot?.querySelector(".toast")?.textContent).toContain(
+      "Climate unavailable",
+    );
   });
 
   it("turns the heat pump and active clean script off from the clean button", async () => {
@@ -1509,6 +1704,10 @@ describe("dashy-dashboard-panel", () => {
         temperature: 23,
         fan_mode: "powerful",
       },
+    };
+    hass.states["input_boolean.sample_clean_air"] = {
+      ...hass.states["input_boolean.sample_clean_air"],
+      state: "on",
     };
 
     document.body.append(element);
